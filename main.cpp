@@ -56,7 +56,7 @@ menuentry   'Boot An ISO file                                                   
 #                  The kernel and initrd files will not be found unless the correct paths are set.         
 #
      clear
-set isopath='/linuxmint-22-cinnamon-64bit.iso'
+set isopath='/linuxmint-22.1-cinnamon-64bit.iso'
      set kernelpath='/casper/vmlinuz'                 # Example '/vmlinuz'
      set initrdpath='/casper/initrd.lz'                 # Example '/initrd.img'
      set bootparms='boot=casper iso-scan/filename='$isopath' reboot=cold nomodeset noprompt noeject ---'          # Example 'boot=/ iso-scan/filename='$isopath' noprompt noeject ---'
@@ -326,7 +326,7 @@ int main() {
 
     // Step 7: OS Selection Menu
     std::cout << "Select your OS:" << std::endl;
-    std::cout << "1 - Linux Mint 22 Cinnamon" << std::endl;
+    std::cout << "1 - Linux Mint 22.1 Cinnamon" << std::endl;
     std::cout << "2 - Linux Mint 22 XFCE" << std::endl;
     std::cout << "3 - Ubuntu 24.04.1 LTS" << std::endl;
 
@@ -338,7 +338,7 @@ int main() {
 
     switch (choice) {
         case 1:
-            executeCommand("powershell -Command \"Start-BitsTransfer -Source 'https://mirrors.layeronline.com/linuxmint/stable/22/linuxmint-22-cinnamon-64bit.iso' -Destination 'C:/linuxmint-22-cinnamon-64bit.iso' \"");
+            executeCommand("powershell -Command \"Start-BitsTransfer -Source 'https://mirrors.layeronline.com/linuxmint/stable/22.1/linuxmint-22.1-cinnamon-64bit.iso' -Destination 'C:/linuxmint-22.1-cinnamon-64bit.iso' \"");
             cfgContent = cfgCin;
             break;
         case 2:
