@@ -1,17 +1,11 @@
 WARNING: This software is in alpha, and is not recommended for use on your main/critical PC.
 
-You must run the program as administrator and disable secure boot to use this installer. Refer to your computer's documentation to access the BIOS during boot and disable Secure Boot. Only supports dual boot installations, ERASING WINDOWS WILL BREAK THE INSTALLER.
+You must run the program as administrator.
 
-Disable bitlocker/decrypt your hard drive.
+You have to disable bitlocker/decrypt your hard drive to use this software.
 
-In order to make sapce for Linux, reduce the size of your main partition in windows partition manager.
+After the installation is complete, you will have to give the new boot entry priority in your BIOS settings.
 
-You also have to disable windows defender under Settings > Privacy & Security > Windows Security. Click on the "Virus & threat protection" section. Under Virus & threat protection settings, click on "Manage settings". Find the "Real-time protection" toggle switch and turn it off. Also turn off all other virus and threat protection features.
-
-Once you have loaded the iso, click on the disc icon to install Linux. Do not erase windows, instead create a dual boot installation.
-
-After the installation is complete, you may have to give the new boot loader priority in your BIOS settings.
-
-Currently the installer supports installation of Linux Mint 22 Cinnamon, Linux Mint 22 XFCE, and Ubuntu 24.04.1.
+Currently the installer supports installation of Linux Mint 22.1 Cinnamon.
 
 Released under GNU General Public License v3.0. You are free to do whatever you like with the source except distribute a closed source version.
