@@ -1,368 +1,763 @@
+/*
+ * Linux Mint 22.1 Partition Installer for Windows 11 UEFI Systems
+ * C++ version for MSYS2/MinGW-w64
+ * Must be run as Administrator
+ * 
+ * Compile with:
+ * g++ -std=c++17 -o wli.exe wli.cpp -lwininet -lshell32 -lole32 -luuid -static
+ */
+
 #include <iostream>
 #include <fstream>
 #include <string>
+#include <vector>
+#include <map>
+#include <filesystem>
+#include <cstdlib>
+#include <cstring>
+#include <iomanip>
+#include <sstream>
+#include <algorithm>
+#include <thread>
+#include <chrono>
+
 #include <windows.h>
-#include <urlmon.h>
-#pragma comment(lib, "urlmon.lib")
+#include <wininet.h>
+#include <shellapi.h>
+#include <shlobj.h>
 
-// Function to execute a system command
-void executeCommand(const std::string& command) {
-    system(command.c_str());
-}
+namespace fs = std::filesystem;
 
-// Function to download a file
-bool downloadFile(const std::string& url, const std::string& destination) {
-    return URLDownloadToFileA(nullptr, url.c_str(), destination.c_str(), 0, nullptr) == S_OK;
-}
+// Constants
+const int MIN_PARTITION_SIZE_GB = 7;
+const int MIN_LINUX_SIZE_GB = 20;
+const int SECTOR_SIZE = 512;
+const char* LINUX_MINT_URL = "https://mirrors.kernel.org/linuxmint/stable/22.1/linuxmint-22.1-cinnamon-64bit.iso";
 
-// Function to write configuration content to a file
-void writeConfigFile(const std::string& path, const std::string& content) {
-    std::ofstream outFile(path);
-    if (outFile.is_open()) {
-        outFile << content;
-        outFile.close();
-    } else {
-        std::cerr << "Unable to open file: " << path << std::endl;
-    }
-}
+// Mirror URLs for fallback
+const std::vector<std::string> MINT_MIRRORS = {
+    "https://mirrors.kernel.org/linuxmint/stable/22.1/linuxmint-22.1-cinnamon-64bit.iso",
+    "https://mirror.csclub.uwaterloo.ca/linuxmint/stable/22.1/linuxmint-22.1-cinnamon-64bit.iso",
+    "https://mirrors.layeronline.com/linuxmint/stable/22.1/linuxmint-22.1-cinnamon-64bit.iso",
+    "https://mirror.arizona.edu/linuxmint/stable/22.1/linuxmint-22.1-cinnamon-64bit.iso"
+};
 
-// Function to create a directory if it does not exist
-void createDirectory(const std::string& path) {
-    CreateDirectoryA(path.c_str(), nullptr);
-}
+struct DriveInfo {
+    char letter;
+    std::string path;
+    std::string label;
+    std::string filesystem;
+    double total_gb;
+    double free_gb;
+    bool is_system;
+    int disk_number;
+    int partition_number;
+};
 
-// Embedded configuration file contents as string literals
-const std::string cfgCin = R"(
-#
-#  Menu Entry 0       Boot An ISO file
-#
-#  ** Grub will boot this entry by default **
-#
-menuentry   'Boot An ISO file                                                   Hotkey=i'   --hotkey=i    --class isoboot   --class icon-isoboot  {
-     set reviewpause=2
-     echo GNU Grub is preparing to boot  Boot An ISO file
-     set gfxpayload=1024x768
-# start-grub2win-custom-code
-#
-#            This is sample code for booting from an iso file
-#            via the Grub2Win g2wisoboot function
-#
-#            See the Grub2Win help file advanced topics section for more information
-#
-#            Note: There are many many ISO files available. They are all different.
-#                  You must examine your particular ISO file with a utility like 7-Zip to
-#                  obtain the proper kernel and initrd paths.
-#                  You can then set the kernelpath and initrdpath variables below.
-#                  The kernel and initrd files will not be found unless the correct paths are set.         
-#
-     clear
-set isopath='/linuxmint-22.1-cinnamon-64bit.iso'
-     set kernelpath='/casper/vmlinuz'                 # Example '/vmlinuz'
-     set initrdpath='/casper/initrd.lz'                 # Example '/initrd.img'
-     set bootparms='boot=casper iso-scan/filename='$isopath' reboot=cold nomodeset noprompt noeject ---'          # Example 'boot=/ iso-scan/filename='$isopath' noprompt noeject ---'
-#
-     g2wisoboot                                          # Run the g2wisoboot function
-#
-# end-grub2win-custom-code
-     savelast 0 'Boot An ISO file'
-}
-)";
-
-const std::string cfgXfce = R"(
-#
-#  Menu Entry 0       Boot An ISO file
-#
-#  ** Grub will boot this entry by default **
-#
-menuentry   'Boot An ISO file                                                   Hotkey=i'   --hotkey=i    --class isoboot   --class icon-isoboot  {
-     set reviewpause=2
-     echo GNU Grub is preparing to boot  Boot An ISO file
-     set gfxpayload=1024x768
-# start-grub2win-custom-code
-#
-#            This is sample code for booting from an iso file
-#            via the Grub2Win g2wisoboot function
-#
-#            See the Grub2Win help file advanced topics section for more information
-#
-#            Note: There are many many ISO files available. They are all different.
-#                  You must examine your particular ISO file with a utility like 7-Zip to
-#                  obtain the proper kernel and initrd paths.
-#                  You can then set the kernelpath and initrdpath variables below.
-#                  The kernel and initrd files will not be found unless the correct paths are set.         
-#
-     clear
-set isopath='/linuxmint-22-xfce-64bit.iso'
-     set kernelpath='/casper/vmlinuz'                 # Example '/vmlinuz'
-     set initrdpath='/casper/initrd.lz'                 # Example '/initrd.img'
-     set bootparms='boot=casper iso-scan/filename='$isopath' reboot=cold nomodeset noprompt noeject ---'          # Example 'boot=/ iso-scan/filename='$isopath' noprompt noeject ---'
-#
-     g2wisoboot                                          # Run the g2wisoboot function
-#
-# end-grub2win-custom-code
-     savelast 0 'Boot An ISO file'
-}
-
-)";
-
-const std::string cfgUbu = R"(
-#
-#  Menu Entry 0       Boot An ISO file
-#
-#  ** Grub will boot this entry by default **
-#
-menuentry   'Boot An ISO file                                                   Hotkey=i'   --hotkey=i    --class isoboot   --class icon-isoboot  {
-     set reviewpause=2
-     echo GNU Grub is preparing to boot  Boot An ISO file
-     set gfxpayload=1024x768
-# start-grub2win-custom-code
-#
-#            This is sample code for booting from an iso file
-#            via the Grub2Win g2wisoboot function
-#
-#            See the Grub2Win help file advanced topics section for more information
-#
-#            Note: There are many many ISO files available. They are all different.
-#                  You must examine your particular ISO file with a utility like 7-Zip to
-#                  obtain the proper kernel and initrd paths.
-#                  You can then set the kernelpath and initrdpath variables below.
-#                  The kernel and initrd files will not be found unless the correct paths are set.         
-#
-     clear
-set isopath='/ubuntu-24.04.1-desktop-amd64.iso'
-     set kernelpath='/casper/vmlinuz'                 # Example '/vmlinuz'
-     set initrdpath='/casper/initrd'                 # Example '/initrd.img'
-     set bootparms='boot=casper iso-scan/filename='$isopath' reboot=cold nomodeset noprompt noeject ---'          # Example 'boot=/ iso-scan/filename='$isopath' noprompt noeject ---'
-#
-     g2wisoboot                                          # Run the g2wisoboot function
-#
-# end-grub2win-custom-code
-     savelast 0 'Boot An ISO file'
-}
-
-)";
-
-const std::string grubCfg = R"(
-#
-#                 DO NOT EDIT THIS FILE!!
-#
-# It is automatically generated by C:\grub2\grub2win.exe
-# using templates from             C:\grub2\winsource
-# and settings from                C:\grub2\windata\customconfigs
-# and user section code from       C:\grub2\userfiles\usersection.cfg
-#
-#       Created on Samstag  18 Mai 2024  at  20:37:48
-#
-# Generated by Grub2Win   Version 2.4.0.6   Build 1667   from directory  C:\grub2
-# Gen Stamp                                 2024 - 0517 - 230410      Build 1667   ** Yesterday **
-#
-# The grub menu theme is - Basic
-# The grub menu font  is - Unifont 16  -  Automatic
-#
-#  Grub2Win generated  6 menu entries
-#  Includes GNU Grub version 2.12         The GNU Grub timeout is 30 seconds
-#  
-#
-#  The current Windows display resolution is   1099x818
-#  Grub resolution will be set at boot time to 1024x768,auto
-#  The Grub default boot OS is menu entry 0  -  Boot An ISO file
-#  The Grub locale language is ** Auto **   English   The locale code is - en
-#
-
-
-set default=0
-set grub2win_chosen='0  -  Boot An ISO file'
-set grub2win_version=2.4.0.6
-set grub2win_langauto=yes
-load_env grub2win_reboot
-if [ ! $grub2win_reboot = no ] ; then set default=$grub2win_reboot ; set grub2win_reboot=no ; save_env grub2win_reboot ; fi
-set timeout=30
-set lang=en
-set pager=1
-set icondir=$prefix/themes/icons
-set locale_dir=$prefix/locale
-if [ -z $grub2win_funcstatus ] ; then source $prefix/g2bootmgr/gnugrub.functions.cfg ; fi 
-g2wbits 
-set grub2win_custmode=EFI
-set grub2win_lastbooted=no
-set grub2win_efilevel=159
-set grub2win_efiuuid=A699-2EF0
-set gfxmode=1024x768,auto
-set theme=$prefix/themes/custom.config
-if [ $grub2win_bootmode = EFI ] ; then set theme=$theme.$grub2win_efibits.efi.txt ; else set theme=$theme.$grub2win_procbits.bios.txt ; fi
-export theme
-export icondir
-set gfxpayload=text
-insmod png
-insmod all_video
-source $prefix/winsource/template.gfxfonts.cfg
-load_env grub2win_gfxmode
-if [ ! -z $grub2win_gfxmode ] ; then set gfxmode=$grub2win_gfxmode ; fi
-insmod gfxterm
-terminal_output gfxterm
-insmod gfxmenu
-
-
-# start-grub2win-auto-menu-section  ***************************************************
-#
-
-#
-#  Menu Entry For Custom Code 0       Boot An ISO file
-#
-#  ** Grub will boot this entry by default **
-#
-#   Comment 'Boot An ISO file                                                   Hotkey=i'   --hotkey=i    --class isoboot   --class icon-isoboot
-#
-     source $prefix/windata/customconfigs/BootAnISOfile.cfg
-#
-
-#
-#  Menu Entry 1       Windows EFI Boot Manager
-#
-menuentry   'Windows EFI Boot Manager                                           Hotkey=w'   --hotkey=w    --class windows   --class icon-windows  {
-     set reviewpause=5
-     set pager=0
-     if [ $grub_platform = efi ]; then
-         set efibootmgr=/efi/Microsoft/Boot/bootmgfw.efi
-         getpartition  file  $efibootmgr  root
-         if [ $? = 0 ] ; then
-         echo Grub is now loading the Windows EFI Boot Manager
-             echo Boot disk address is    $root
-             echo The boot mode is        Windows EFI
-             chainloader $efibootmgr
-         fi
-     else
-         if [ -f (hd0,1)/ntldr ]; then
-             set bootcontrol="XP NTLDR"
-             set root=(hd0,1)
-             set bootmodule=microsoft.ntldr.xp.bios
-	     if [ ! -f ($root)/$bootmodule ] ; then set bootmodule=ntldr ; fi
-         else
-             set biosbootmgr=/bootmgr
-             getpartition  file  $biosbootmgr  root
-             set bootcontrol=BCD
-             set bootmodule=microsoft.bootmgr.bios
-             if [ ! -f ($root)/$bootmodule ] ; then set bootmodule=bootmgr ; fi
-         fi
-         echo
-         echo The Windows BIOS boot manager is at address ($root)
-         echo
-         echo The Windows boot control type is $bootcontrol
-         echo
-         ntldr /$bootmodule
-     fi
-     g2wsleep
-     savelast 1 'Windows EFI Boot Manager'
-}
-
-
-#
-#  Menu Entry 2       Boot Information and Utilities
-#
-menuentry   'Boot Information and Utilities                                     Hotkey=b'   --hotkey=b    --class bootinfo   --class icon-bootinfo  {
-     unset reviewpause
-     g2wbootinfo
-}
-
-
-#
-#  Menu Entry 3       Shutdown the system
-#
-menuentry   'Shutdown the system                                                Hotkey=s'   --hotkey=s    --class shutdown   --class icon-shutdown  {
-     unset reviewpause
-     g2wutil halt
-}
-
-
-#
-#  Menu Entry 4       Reboot your system
-#
-menuentry   'Reboot your system                                                 Hotkey=r'   --hotkey=r    --class reboot   --class icon-reboot  {
-     unset reviewpause
-     g2wutil reboot
-}
-
-
-#
-#  Menu Entry 5       Boot to your EFI firmware
-#
-menuentry   'Boot to your EFI firmware                                          Hotkey=f'   --hotkey=f    --class bootfirmware   --class icon-bootfirmware  {
-     unset reviewpause
-     g2wutil fwsetup
-}
-
-
-#
-# end-grub2win-auto-menu-section    ***************************************************
-)";
-
-// Main function for installation steps
-int main() {
-    // Step 1: Disable test signing mode
-    executeCommand("bcdedit -set TESTSIGNING OFF");
-
-    // Step 2: Download grub2win.zip
-    std::cout << "Downloading Grub2Win..." << std::endl;
-    executeCommand("powershell -Command \"Start-BitsTransfer -Source 'https://sourceforge.net/projects/grub2win/files/grub2win.zip/download' -Destination 'C:/grub2win.zip' \"");
-
-
-    // Step 3: Extract the ZIP file
-    std::cout << "Extracting Grub2Win..." << std::endl;
-    executeCommand("powershell -Command \"Expand-Archive -Path 'C:\\grub2win.zip' -DestinationPath 'C:\\' -Force\"");
-
-    // Step 4: Run the Grub2Win installer
-    std::cout << "Running Grub2Win installer..." << std::endl;
-    executeCommand("start C:\\G2WInstall.exe");
-
-    // Wait for user confirmation
-    std::cout << "Press any key after Grub2Win installation is complete." << std::endl;
-    std::cin.get();
-
-    // Step 5: Write grub.cfg file
-    writeConfigFile("C:\\grub2\\grub.cfg", grubCfg);
-
-    // Step 6: Create custom configs directory
-    createDirectory("C:\\grub2\\windata\\customconfigs");
-
-    // Step 7: OS Selection Menu
-    std::cout << "Select your OS:" << std::endl;
-    std::cout << "1 - Linux Mint 22.1 Cinnamon" << std::endl;
-    std::cout << "2 - Linux Mint 22 XFCE" << std::endl;
-    std::cout << "3 - Ubuntu 24.04.1 LTS" << std::endl;
-
-    int choice;
-    std::cout << "Type a number and press ENTER: ";
-    std::cin >> choice;
-
-    std::string isoUrl, cfgContent;
-
-    switch (choice) {
-        case 1:
-            executeCommand("powershell -Command \"Start-BitsTransfer -Source 'https://mirrors.layeronline.com/linuxmint/stable/22.1/linuxmint-22.1-cinnamon-64bit.iso' -Destination 'C:/linuxmint-22.1-cinnamon-64bit.iso' \"");
-            cfgContent = cfgCin;
-            break;
-        case 2:
-            executeCommand("powershell -Command \"Start-BitsTransfer -Source 'https://mirrors.layeronline.com/linuxmint/stable/22/linuxmint-22-xfce-64bit.iso' -Destination 'C:/linuxmint-22-xfce-64bit.iso' \"");
-            cfgContent = cfgXfce;
-            break;
-        case 3:
-            executeCommand("powershell -Command \"Start-BitsTransfer -Source 'https://mirrors.edge.kernel.org/ubuntu-releases/24.04.1/ubuntu-24.04.1-desktop-amd64.iso' -Destination 'C:/ubuntu-24.04.1-desktop-amd64.iso' \"");
-            cfgContent = cfgUbu;
-            break;
-        default:
-            std::cerr << "Invalid choice." << std::endl;
-            return 1;
-    }
-
-    // Step 8: Write the selected configuration content to the file
-    writeConfigFile("C:\\grub2\\windata\\customconfigs\\BootAnISOfile.cfg", cfgContent);
-
-    // Step 9: Download the selected ISO
+// Utility functions
+bool isAdmin() {
+    BOOL isAdmin = FALSE;
+    PSID administratorsGroup = NULL;
     
+    SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+    if (AllocateAndInitializeSid(&ntAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+                                 DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0,
+                                 &administratorsGroup)) {
+        CheckTokenMembership(NULL, administratorsGroup, &isAdmin);
+        FreeSid(administratorsGroup);
+    }
+    
+    return isAdmin;
+}
 
-    // Step 10: Reboot the system
-    std::cout << "Rebooting the system..." << std::endl;
-    executeCommand("shutdown /r");
+void runAsAdmin(const std::string& exePath) {
+    ShellExecuteA(NULL, "runas", exePath.c_str(), NULL, NULL, SW_SHOWNORMAL);
+}
 
+void printHeader() {
+    std::cout << std::string(60, '=') << std::endl;
+    std::cout << "Linux Mint 22.1 Partition Installer - C++ Version" << std::endl;
+    std::cout << "For Windows 11 UEFI Systems" << std::endl;
+    std::cout << std::string(60, '=') << std::endl << std::endl;
+}
+
+std::string executeCommand(const std::string& command) {
+    std::string result;
+    char buffer[128];
+    FILE* pipe = _popen(command.c_str(), "r");
+    
+    if (!pipe) {
+        return "";
+    }
+    
+    while (fgets(buffer, sizeof(buffer), pipe) != NULL) {
+        result += buffer;
+    }
+    
+    _pclose(pipe);
+    return result;
+}
+
+std::string executePowerShell(const std::string& command) {
+    std::string fullCommand = "powershell -ExecutionPolicy Bypass -Command \"" + command + "\"";
+    return executeCommand(fullCommand);
+}
+
+bool downloadWithProgress(const std::string& url, const std::string& destination) {
+    std::cout << "\nDownloading from: " << url << std::endl;
+    
+    HINTERNET hInternet = InternetOpenA("MintInstaller/1.0", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
+    if (!hInternet) {
+        std::cerr << "Failed to initialize WinINet" << std::endl;
+        return false;
+    }
+    
+    HINTERNET hUrl = InternetOpenUrlA(hInternet, url.c_str(), NULL, 0, INTERNET_FLAG_RELOAD, 0);
+    if (!hUrl) {
+        InternetCloseHandle(hInternet);
+        std::cerr << "Failed to open URL" << std::endl;
+        return false;
+    }
+    
+    // Get file size
+    char sizeBuffer[32];
+    DWORD sizeBufferLen = sizeof(sizeBuffer);
+    DWORD index = 0;
+    HttpQueryInfoA(hUrl, HTTP_QUERY_CONTENT_LENGTH, sizeBuffer, &sizeBufferLen, &index);
+    
+    long long totalSize = std::stoll(sizeBuffer);
+    long long downloadedSize = 0;
+    
+    std::ofstream outFile(destination, std::ios::binary);
+    if (!outFile) {
+        InternetCloseHandle(hUrl);
+        InternetCloseHandle(hInternet);
+        std::cerr << "Failed to create output file" << std::endl;
+        return false;
+    }
+    
+    const int bufferSize = 8192;
+    char buffer[bufferSize];
+    DWORD bytesRead;
+    
+    while (InternetReadFile(hUrl, buffer, bufferSize, &bytesRead) && bytesRead > 0) {
+        outFile.write(buffer, bytesRead);
+        downloadedSize += bytesRead;
+        
+        // Progress bar
+        double percent = (double)downloadedSize * 100.0 / totalSize;
+        int barWidth = 40;
+        int filled = (int)(barWidth * downloadedSize / totalSize);
+        
+        std::cout << "\r[";
+        for (int i = 0; i < barWidth; i++) {
+            if (i < filled) std::cout << "█";
+            else std::cout << "-";
+        }
+        std::cout << "] " << std::fixed << std::setprecision(1) << percent << "% - ";
+        std::cout << downloadedSize / (1024 * 1024) << "/" << totalSize / (1024 * 1024) << " MB";
+        std::cout.flush();
+    }
+    
+    std::cout << std::endl;
+    
+    outFile.close();
+    InternetCloseHandle(hUrl);
+    InternetCloseHandle(hInternet);
+    
+    return true;
+}
+
+bool downloadLinuxMint(const std::string& destination) {
+    std::cout << "\nDownloading Linux Mint 22.1 ISO..." << std::endl;
+    std::cout << "This will download approximately 2.9 GB" << std::endl;
+    
+    for (size_t i = 0; i < MINT_MIRRORS.size(); i++) {
+        std::cout << "\nTrying mirror " << (i + 1) << "/" << MINT_MIRRORS.size() << std::endl;
+        
+        if (downloadWithProgress(MINT_MIRRORS[i], destination)) {
+            std::cout << "\nDownload complete: " << destination << std::endl;
+            return true;
+        }
+        
+        if (i < MINT_MIRRORS.size() - 1) {
+            std::cout << "Trying next mirror..." << std::endl;
+        }
+    }
+    
+    return false;
+}
+
+DriveInfo getCDriveInfo() {
+    DriveInfo info;
+    info.letter = 'C';
+    info.path = "C:";
+    info.is_system = true;
+    
+    // Get volume information
+    char volumeName[MAX_PATH];
+    char fileSystem[MAX_PATH];
+    DWORD serialNumber;
+    DWORD maxComponentLen;
+    DWORD fileSystemFlags;
+    
+    if (GetVolumeInformationA("C:\\", volumeName, sizeof(volumeName),
+                              &serialNumber, &maxComponentLen, &fileSystemFlags,
+                              fileSystem, sizeof(fileSystem))) {
+        info.label = volumeName;
+        info.filesystem = fileSystem;
+    }
+    
+    // Get disk space
+    ULARGE_INTEGER freeBytesAvailable, totalBytes, totalFreeBytes;
+    if (GetDiskFreeSpaceExA("C:\\", &freeBytesAvailable, &totalBytes, &totalFreeBytes)) {
+        info.total_gb = totalBytes.QuadPart / (1024.0 * 1024.0 * 1024.0);
+        info.free_gb = freeBytesAvailable.QuadPart / (1024.0 * 1024.0 * 1024.0);
+    }
+    
+    // Get disk and partition numbers using PowerShell
+    std::string diskCmd = "Get-Partition -DriveLetter C | Select-Object -ExpandProperty DiskNumber";
+    std::string partCmd = "Get-Partition -DriveLetter C | Select-Object -ExpandProperty PartitionNumber";
+    
+    std::string diskResult = executePowerShell(diskCmd);
+    std::string partResult = executePowerShell(partCmd);
+    
+    info.disk_number = diskResult.empty() ? 0 : std::stoi(diskResult);
+    info.partition_number = partResult.empty() ? 2 : std::stoi(partResult);
+    
+    return info;
+}
+
+bool checkDiskSpace(DriveInfo& cInfo) {
+    cInfo = getCDriveInfo();
+    
+    std::cout << "\nC: Drive Information:" << std::endl;
+    std::cout << "  Total Size: " << std::fixed << std::setprecision(2) << cInfo.total_gb << " GB" << std::endl;
+    std::cout << "  Free Space: " << cInfo.free_gb << " GB" << std::endl;
+    std::cout << "  Disk Number: " << cInfo.disk_number << std::endl;
+    std::cout << "  Partition Number: " << cInfo.partition_number << std::endl;
+    
+    double minRequired = MIN_PARTITION_SIZE_GB + MIN_LINUX_SIZE_GB + 10; // 10 GB buffer
+    
+    if (cInfo.free_gb < minRequired) {
+        std::cerr << "\nError: Not enough free space on C: drive!" << std::endl;
+        std::cerr << "Required: " << minRequired << " GB" << std::endl;
+        std::cerr << "Available: " << cInfo.free_gb << " GB" << std::endl;
+        return false;
+    }
+    
+    return true;
+}
+
+std::pair<double, double> getLinuxSize() {
+    double size;
+    
+    while (true) {
+        std::cout << "\nHow much space do you want to allocate for Linux?" << std::endl;
+        std::cout << "Minimum: " << MIN_LINUX_SIZE_GB << " GB" << std::endl;
+        std::cout << "Recommended: 30-50 GB" << std::endl;
+        std::cout << "Enter size in GB: ";
+        
+        if (std::cin >> size && size >= MIN_LINUX_SIZE_GB) {
+            double totalNeeded = size + MIN_PARTITION_SIZE_GB;
+            return {size, totalNeeded};
+        }
+        
+        std::cerr << "Error: Size must be at least " << MIN_LINUX_SIZE_GB << " GB" << std::endl;
+        std::cin.clear();
+        std::cin.ignore(10000, '\n');
+    }
+}
+
+bool shrinkCPartition(double sizeToShrinkGB) {
+    std::cout << "\nShrinking C: partition by " << std::fixed << std::setprecision(2) 
+              << sizeToShrinkGB << " GB..." << std::endl;
+    
+    int sizeMB = (int)(sizeToShrinkGB * 1024);
+    
+    // Create diskpart script
+    std::string tempPath = std::getenv("TEMP") ? std::getenv("TEMP") : ".";
+    std::string scriptPath = tempPath + "\\shrink_script.txt";
+    
+    std::ofstream script(scriptPath);
+    script << "select volume c" << std::endl;
+    script << "shrink desired=" << sizeMB << std::endl;
+    script << "exit" << std::endl;
+    script.close();
+    
+    // Execute diskpart
+    std::string command = "diskpart /s \"" + scriptPath + "\"";
+    std::string result = executeCommand(command);
+    
+    // Clean up
+    std::remove(scriptPath.c_str());
+    
+    if (result.find("successfully") != std::string::npos) {
+        std::cout << "C: partition shrunk successfully!" << std::endl;
+        return true;
+    }
+    
+    std::cerr << "Failed to shrink partition" << std::endl;
+    return false;
+}
+
+std::string createNewPartition(int diskNumber, double sizeGB, const std::string& label = "LINUXMINT") {
+    std::cout << "\nCreating new " << sizeGB << " GB partition..." << std::endl;
+    
+    int sizeMB = (int)(sizeGB * 1024);
+    
+    // Create diskpart script
+    std::string tempPath = std::getenv("TEMP") ? std::getenv("TEMP") : ".";
+    std::string scriptPath = tempPath + "\\create_script.txt";
+    
+    std::ofstream script(scriptPath);
+    script << "select disk " << diskNumber << std::endl;
+    script << "create partition primary size=" << sizeMB << std::endl;
+    script << "format fs=fat32 label=" << label << " quick" << std::endl;
+    script << "assign" << std::endl;
+    script << "exit" << std::endl;
+    script.close();
+    
+    // Execute diskpart
+    std::string command = "diskpart /s \"" + scriptPath + "\"";
+    std::string result = executeCommand(command);
+    
+    // Clean up
+    std::remove(scriptPath.c_str());
+    
+    if (result.find("successfully") != std::string::npos) {
+        // Wait for Windows to recognize the new partition
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+        
+        // Find the new drive letter
+        for (char letter = 'D'; letter <= 'Z'; letter++) {
+            std::string drive = std::string(1, letter) + ":";
+            
+            if (GetDriveTypeA((drive + "\\").c_str()) == DRIVE_FIXED) {
+                char volumeName[MAX_PATH];
+                if (GetVolumeInformationA((drive + "\\").c_str(), volumeName, sizeof(volumeName),
+                                          NULL, NULL, NULL, NULL, 0)) {
+                    if (std::string(volumeName) == label) {
+                        std::cout << "New partition created and assigned to " << drive << std::endl;
+                        return drive;
+                    }
+                }
+            }
+        }
+    }
+    
+    std::cerr << "Failed to create partition" << std::endl;
+    return "";
+}
+
+std::string mountISO(const std::string& isoPath) {
+    std::cout << "\nMounting ISO..." << std::endl;
+    
+    std::string psCmd = "(Mount-DiskImage -ImagePath \\\"" + isoPath + 
+                        "\\\" -PassThru | Get-Volume).DriveLetter";
+    std::string result = executePowerShell(psCmd);
+    
+    // Remove whitespace
+    result.erase(std::remove_if(result.begin(), result.end(), ::isspace), result.end());
+    
+    if (!result.empty()) {
+        std::string mountedPath = result + ":";
+        std::cout << "ISO mounted at " << mountedPath << std::endl;
+        return mountedPath;
+    }
+    
+    std::cerr << "Failed to mount ISO!" << std::endl;
+    return "";
+}
+
+void unmountISO(const std::string& isoPath) {
+    std::cout << "\nUnmounting ISO..." << std::endl;
+    std::string psCmd = "Dismount-DiskImage -ImagePath \\\"" + isoPath + "\\\"";
+    executePowerShell(psCmd);
+}
+
+bool copyFiles(const std::string& source, const std::string& target) {
+    std::cout << "\nCopying Linux Mint files to " << target << "..." << std::endl;
+    std::cout << "This may take 10-20 minutes..." << std::endl;
+    
+    // Use robocopy for reliable copying
+    std::string robocopyCmd = "robocopy \"" + source + "\" \"" + target + 
+                              "\" /E /R:3 /W:5 /NP /NFL /NDL /ETA";
+    
+    std::cout << "Starting file copy..." << std::endl;
+    int result = std::system(robocopyCmd.c_str());
+    
+    // Robocopy exit codes: 0-7 are success codes
+    if (result >= 8) {
+        std::cerr << "Failed to copy files! Exit code: " << result << std::endl;
+        return false;
+    }
+    
+    std::cout << "Files copied successfully!" << std::endl;
+    
+    // Remove read-only attributes
+    std::cout << "Removing read-only attributes..." << std::endl;
+    std::string attribCmd = "attrib -R \"" + target + "\\*.*\" /S /D";
+    std::system(attribCmd.c_str());
+    
+    return true;
+}
+
+void updateBootConfig(const std::string& targetDrive) {
+    std::cout << "\nUpdating boot configuration files..." << std::endl;
+    
+    std::string grubDir = targetDrive + "\\boot\\grub";
+    fs::create_directories(grubDir);
+    
+    std::string loopbackCfg = "# GRUB loopback configuration for Linux Mint\n"
+                              "set timeout=5\n"
+                              "set default=0\n"
+                              "\n"
+                              "menuentry \"Linux Mint 22.1\" {\n"
+                              "    set root=(hd0,1)\n"
+                              "    linux /casper/vmlinuz boot=casper quiet splash\n"
+                              "    initrd /casper/initrd.lz\n"
+                              "}\n"
+                              "\n"
+                              "menuentry \"Linux Mint 22.1 (Safe Mode)\" {\n"
+                              "    set root=(hd0,1)\n"
+                              "    linux /casper/vmlinuz boot=casper nomodeset quiet splash\n"
+                              "    initrd /casper/initrd.lz\n"
+                              "}\n"
+                              "\n"
+                              "menuentry \"Linux Mint 22.1 (Persistent - if configured)\" {\n"
+                              "    set root=(hd0,1)\n"
+                              "    linux /casper/vmlinuz boot=casper persistent quiet splash\n"
+                              "    initrd /casper/initrd.lz\n"
+                              "}\n";
+    
+    try {
+        std::ofstream configFile(grubDir + "\\loopback.cfg");
+        configFile << loopbackCfg;
+        configFile.close();
+        std::cout << "Boot configuration updated!" << std::endl;
+    } catch (...) {
+        std::cout << "Warning: Could not update boot configuration (files are read-only)" << std::endl;
+        std::cout << "This is normal for ISO files - boot configuration will use defaults" << std::endl;
+    }
+}
+
+void createHelperScripts(const std::string& targetDrive) {
+    std::string grubScript = "#!/bin/bash\n"
+                            "# GRUB configuration helper for Linux Mint\n"
+                            "# Run this from Linux Mint live session if boot doesn't work\n"
+                            "\n"
+                            "echo \"Setting up GRUB for UEFI boot...\"\n"
+                            "\n"
+                            "# Mount the partition\n"
+                            "sudo mkdir -p /mnt/mint\n"
+                            "sudo mount " + targetDrive + " /mnt/mint\n"
+                            "\n"
+                            "# Install GRUB for UEFI\n"
+                            "sudo apt-get update\n"
+                            "sudo apt-get install -y grub-efi-amd64\n"
+                            "\n"
+                            "# Install GRUB to the partition\n"
+                            "sudo grub-install --target=x86_64-efi --efi-directory=/mnt/mint --boot-directory=/mnt/mint/boot --removable --recheck\n"
+                            "\n"
+                            "# Create a basic GRUB configuration\n"
+                            "cat > /mnt/mint/boot/grub/grub.cfg << 'EOF'\n"
+                            "set timeout=5\n"
+                            "set default=0\n"
+                            "\n"
+                            "menuentry \"Linux Mint 22.1 Live\" {\n"
+                            "    set root=(hd0,1)\n"
+                            "    linux /casper/vmlinuz boot=casper quiet splash\n"
+                            "    initrd /casper/initrd.lz\n"
+                            "}\n"
+                            "\n"
+                            "menuentry \"Linux Mint 22.1 (Compatibility Mode)\" {\n"
+                            "    set root=(hd0,1)\n"
+                            "    linux /casper/vmlinuz boot=casper nomodeset quiet splash\n"
+                            "    initrd /casper/initrd.lz\n"
+                            "}\n"
+                            "EOF\n"
+                            "\n"
+                            "echo \"GRUB setup complete!\"\n"
+                            "sudo umount /mnt/mint\n";
+    
+    std::ofstream scriptFile(targetDrive + "\\setup-grub.sh");
+    scriptFile << grubScript;
+    scriptFile.close();
+}
+
+bool setupUEFIBoot(const std::string& targetDrive, int diskNumber) {
+    std::cout << "\nSetting up UEFI boot configuration..." << std::endl;
+    
+    // Check for EFI boot files
+    std::vector<std::string> efiPaths = {
+        targetDrive + "\\EFI\\BOOT\\BOOTx64.EFI",
+        targetDrive + "\\EFI\\BOOT\\grubx64.efi"
+    };
+    
+    bool efiFound = false;
+    for (const auto& path : efiPaths) {
+        if (fs::exists(path)) {
+            efiFound = true;
+            std::cout << "Found EFI boot file: " << fs::path(path).filename() << std::endl;
+            break;
+        }
+    }
+    
+    if (!efiFound) {
+        std::cout << "Warning: EFI boot file not found. Creating directory structure..." << std::endl;
+        fs::create_directories(targetDrive + "\\EFI\\BOOT");
+    }
+    
+    // Get partition number
+    std::string psCmd = "Get-Partition -DriveLetter " + std::string(1, targetDrive[0]) + 
+                        " | Select-Object -ExpandProperty PartitionNumber";
+    std::string partitionNumber = executePowerShell(psCmd);
+    partitionNumber.erase(std::remove_if(partitionNumber.begin(), partitionNumber.end(), ::isspace), 
+                          partitionNumber.end());
+    
+    std::cout << "\nLinux Mint partition details:" << std::endl;
+    std::cout << "  Drive Letter: " << targetDrive << std::endl;
+    std::cout << "  Disk Number: " << diskNumber << std::endl;
+    std::cout << "  Partition Number: " << partitionNumber << std::endl;
+    
+    // Create instructions file
+    std::string instructions = "UEFI Boot Setup Instructions for Linux Mint\n"
+                              "==========================================\n"
+                              "\n"
+                              "Your Linux Mint bootable partition has been created successfully!\n"
+                              "\n"
+                              "Partition Details:\n"
+                              "- Drive: " + targetDrive + "\n"
+                              "- Disk: " + std::to_string(diskNumber) + "\n"
+                              "- Partition: " + partitionNumber + "\n"
+                              "\n"
+                              "To boot Linux Mint:\n"
+                              "\n"
+                              "1. Restart your computer\n"
+                              "\n"
+                              "2. Access UEFI/BIOS settings:\n"
+                              "   - During startup, press the BIOS key (usually F2, F10, F12, DEL, or ESC)\n"
+                              "   - The exact key depends on your motherboard manufacturer\n"
+                              "\n"
+                              "3. In UEFI settings:\n"
+                              "   - Look for \"Boot\" or \"Boot Order\" section\n"
+                              "   - Find the Linux Mint entry (may appear as \"UEFI: " + targetDrive + " LINUXMINT\")\n"
+                              "   - Set it as the first boot priority\n"
+                              "   - OR use the one-time boot menu (usually F12) to select it\n"
+                              "\n"
+                              "4. Important Settings:\n"
+                              "   - Disable Secure Boot (if enabled)\n"
+                              "   - Ensure UEFI mode is enabled (not Legacy/CSM)\n"
+                              "   - Save changes and exit\n"
+                              "\n"
+                              "5. The system should now boot into Linux Mint Live environment\n"
+                              "\n"
+                              "Note: The Windows Boot Manager entry was NOT modified to prevent boot issues.\n"
+                              "      Use the UEFI boot menu to select between Windows and Linux Mint.\n"
+                              "\n"
+                              "Troubleshooting:\n"
+                              "- If you don't see the Linux Mint option, try disabling Fast Boot\n"
+                              "- Some systems require you to manually add a boot entry pointing to:\n"
+                              "  \\EFI\\BOOT\\BOOTx64.EFI on the LINUXMINT partition\n";
+    
+    // Save instructions to partition
+    std::ofstream instructFile(targetDrive + "\\UEFI_BOOT_INSTRUCTIONS.txt");
+    instructFile << instructions;
+    instructFile.close();
+    
+    // Save to desktop
+    char desktopPath[MAX_PATH];
+    if (SHGetFolderPathA(NULL, CSIDL_DESKTOP, NULL, 0, desktopPath) == S_OK) {
+        std::string desktopFile = std::string(desktopPath) + "\\Linux_Mint_Boot_Instructions.txt";
+        std::ofstream desktopInstructFile(desktopFile);
+        desktopInstructFile << instructions;
+        desktopInstructFile.close();
+    }
+    
+    return true;
+}
+
+bool checkUEFIMode() {
+    std::string result = executePowerShell("$env:firmware_type");
+    
+    if (result.find("UEFI") != std::string::npos) {
+        std::cout << "System is running in UEFI mode ✓" << std::endl;
+        return true;
+    }
+    
+    std::cout << "Warning: Cannot confirm UEFI mode. Proceeding anyway..." << std::endl;
+    return true;
+}
+
+int main(int argc, char* argv[]) {
+    // Check if running as admin
+    if (!isAdmin()) {
+        std::cout << "This program requires administrator privileges." << std::endl;
+        std::cout << "Restarting as administrator..." << std::endl;
+        runAsAdmin(argv[0]);
+        return 0;
+    }
+    
+    printHeader();
+    
+    try {
+        // Check UEFI mode
+        checkUEFIMode();
+        
+        // Step 1: Check disk space
+        DriveInfo cInfo;
+        if (!checkDiskSpace(cInfo)) {
+            return 1;
+        }
+        
+        // Step 2: Get desired Linux size from user
+        auto [linuxSize, totalNeeded] = getLinuxSize();
+        
+        // Verify we have enough space
+        if (cInfo.free_gb < totalNeeded + 10) {
+            std::cerr << "\nError: Not enough free space!" << std::endl;
+            std::cerr << "Need: " << (totalNeeded + 10) << " GB" << std::endl;
+            std::cerr << "Have: " << cInfo.free_gb << " GB" << std::endl;
+            return 1;
+        }
+        
+        std::cout << "\nPlanned partition layout:" << std::endl;
+        std::cout << "  Linux installation: " << linuxSize << " GB" << std::endl;
+        std::cout << "  Linux Mint ISO: " << MIN_PARTITION_SIZE_GB << " GB" << std::endl;
+        std::cout << "  Total to shrink from C: " << totalNeeded << " GB" << std::endl;
+        
+        std::cout << "\nProceed with partition changes? (yes/no): ";
+        std::string confirm;
+        std::cin >> confirm;
+        
+        if (confirm != "yes") {
+            std::cout << "Operation cancelled." << std::endl;
+            return 0;
+        }
+        
+        // Step 3: Download Linux Mint ISO
+        std::string tempPath = std::getenv("TEMP") ? std::getenv("TEMP") : ".";
+        std::string isoPath = tempPath + "\\linuxmint-22.1.iso";
+        
+        if (fs::exists(isoPath)) {
+            std::cout << "\nISO already exists at " << isoPath << ". Use existing? (y/n): ";
+            char useExisting;
+            std::cin >> useExisting;
+            
+            if (useExisting != 'y') {
+                if (!downloadLinuxMint(isoPath)) {
+                    std::cerr << "Failed to download Linux Mint ISO!" << std::endl;
+                    return 1;
+                }
+            }
+        } else {
+            if (!downloadLinuxMint(isoPath)) {
+                std::cerr << "Failed to download Linux Mint ISO!" << std::endl;
+                return 1;
+            }
+        }
+        
+        // Step 4: Shrink C: partition
+        if (!shrinkCPartition(totalNeeded)) {
+            std::cerr << "Failed to shrink C: partition!" << std::endl;
+            std::cerr << "You may need to:" << std::endl;
+            std::cerr << "1. Run disk cleanup" << std::endl;
+            std::cerr << "2. Disable hibernation (powercfg -h off)" << std::endl;
+            std::cerr << "3. Temporarily disable system restore" << std::endl;
+            std::cerr << "4. Reboot and try again" << std::endl;
+            return 1;
+        }
+        
+        // Step 5: Create new partition for Linux Mint ISO
+        std::this_thread::sleep_for(std::chrono::seconds(5));
+        
+        std::string newDrive = createNewPartition(cInfo.disk_number, MIN_PARTITION_SIZE_GB);
+        if (newDrive.empty()) {
+            std::cerr << "Failed to create new partition!" << std::endl;
+            return 1;
+        }
+        
+        // Step 6: Mount ISO and copy files
+        std::string sourcePath = mountISO(isoPath);
+        if (sourcePath.empty()) {
+            std::cerr << "Failed to mount ISO!" << std::endl;
+            return 1;
+        }
+        
+        // Copy files to new partition
+        if (!copyFiles(sourcePath, newDrive)) {
+            unmountISO(isoPath);
+            std::cerr << "Failed to copy files!" << std::endl;
+            return 1;
+        }
+        
+        // Update boot configuration
+        updateBootConfig(newDrive);
+        
+        // Create helper scripts
+        createHelperScripts(newDrive);
+        
+        // Setup UEFI boot
+        setupUEFIBoot(newDrive, cInfo.disk_number);
+        
+        // Unmount ISO
+        unmountISO(isoPath);
+        
+        // Success message
+        std::cout << "\n" << std::string(60, '=') << std::endl;
+        std::cout << "Installation Complete!" << std::endl;
+        std::cout << std::string(60, '=') << std::endl;
+        std::cout << "\nLinux Mint has been installed to drive " << newDrive << std::endl;
+        std::cout << "Reserved " << linuxSize << " GB for full Linux installation" << std::endl;
+        
+        std::cout << "\n*** IMPORTANT BOOT INSTRUCTIONS ***" << std::endl;
+        std::cout << "\nThe Windows Boot Manager was NOT modified to prevent issues." << std::endl;
+        std::cout << "To boot Linux Mint, you must use the UEFI boot menu:" << std::endl;
+        
+        std::cout << "\n1. Restart your computer" << std::endl;
+        std::cout << "2. Press your BIOS/UEFI key during startup:" << std::endl;
+        std::cout << "   - Common keys: F2, F10, F12, DEL, or ESC" << std::endl;
+        std::cout << "   - Watch for the prompt on your screen" << std::endl;
+        std::cout << "3. In the boot menu, select the Linux Mint entry" << std::endl;
+        std::cout << "   - It may appear as 'UEFI: LINUXMINT' or similar" << std::endl;
+        std::cout << "4. Make sure Secure Boot is disabled in UEFI settings" << std::endl;
+        
+        std::cout << "\nTo set Linux Mint as default boot option:" << std::endl;
+        std::cout << "- Enter UEFI settings and change boot order" << std::endl;
+        std::cout << "- Place Linux Mint entry before Windows Boot Manager" << std::endl;
+        
+        std::cout << "\nDetailed instructions saved to:" << std::endl;
+        std::cout << "- " << newDrive << "\\UEFI_BOOT_INSTRUCTIONS.txt" << std::endl;
+        std::cout << "- Desktop\\Linux_Mint_Boot_Instructions.txt" << std::endl;
+        
+        std::cout << "\nDuring Linux installation:" << std::endl;
+        std::cout << "- You'll see " << linuxSize << " GB of unallocated space" << std::endl;
+        std::cout << "- Install Linux Mint to that space" << std::endl;
+        std::cout << "- The installer will set up dual boot properly" << std::endl;
+        
+        // Optionally delete the downloaded ISO
+        std::cout << "\nDelete downloaded ISO file? (y/n): ";
+        char deleteIso;
+        std::cin >> deleteIso;
+        
+        if (deleteIso == 'y') {
+            try {
+                fs::remove(isoPath);
+                std::cout << "ISO file deleted." << std::endl;
+            } catch (...) {
+                std::cout << "Could not delete ISO. File at: " << isoPath << std::endl;
+            }
+        }
+        
+    } catch (const std::exception& e) {
+        std::cerr << "\nError: " << e.what() << std::endl;
+        return 1;
+    }
+    
+    std::cout << "\nPress Enter to exit...";
+    std::cin.ignore();
+    std::cin.get();
+    
     return 0;
 }
