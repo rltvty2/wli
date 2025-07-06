@@ -1,5 +1,5 @@
 # Linux Mint 22.1 Partition Installer for Windows 11 UEFI Systems
-# PowerShell GUI Version
+# PowerShell GUI Version - Modified to place partition at end of free space
 # Run as Administrator: powershell -ExecutionPolicy Bypass -File mint_installer.ps1
 
 #Requires -RunAsAdministrator
@@ -482,9 +482,10 @@ function Start-Installation {
             }
         }
         
-        # Shrink C: partition
+        # Shrink C: partition by the total amount needed
         Set-Status "Shrinking C: partition..."
-        Log-Message "Shrinking C: partition by $totalNeededGB GB..."
+        Log-Message "Shrinking C: partition by $totalNeededGB GB total..."
+        Log-Message "This will create space for Linux ($linuxSizeGB GB) and boot partition ($script:MinPartitionSizeGB GB)..."
         
         try {
             $currentSize = (Get-Partition -DriveLetter C).Size
@@ -520,32 +521,355 @@ exit
         # Wait for Windows to recognize changes
         Start-Sleep -Seconds 5
         
-        # Create new partition
-        Set-Status "Creating new partition..."
-        Log-Message "Creating new $script:MinPartitionSizeGB GB partition..."
+        # Create boot partition at the end of the unallocated space
+        Set-Status "Creating boot partition..."
+        Log-Message "Creating $script:MinPartitionSizeGB GB boot partition at end of disk..."
         
         try {
-            # Create partition
-            $newPartition = New-Partition -DiskNumber $script:CDriveInfo.DiskNumber `
-                -Size ($script:MinPartitionSizeGB * 1GB) `
-                -AssignDriveLetter `
-                -ErrorAction Stop
+            # Refresh disk information
+            Start-Sleep -Seconds 2
+            $disk = Get-Disk -Number $script:CDriveInfo.DiskNumber
+            $partitions = Get-Partition -DiskNumber $script:CDriveInfo.DiskNumber | Sort-Object Offset
             
-            $driveLetter = $newPartition.DriveLetter
+            # Get the C: partition info
+            $cPartition = Get-Partition -DriveLetter C
+            $cPartitionEnd = $cPartition.Offset + $cPartition.Size
             
-            # Format as FAT32
-            Format-Volume -DriveLetter $driveLetter `
-                -FileSystem FAT32 `
-                -NewFileSystemLabel "LINUXMINT" `
-                -Confirm:$false `
-                -ErrorAction Stop
+            # Find all partitions after C:
+            $partitionsAfterC = $partitions | Where-Object { $_.Offset -ge $cPartitionEnd }
             
-            Log-Message "New partition created and assigned to ${driveLetter}:"
-            $script:NewDrive = "${driveLetter}:"
+            if ($partitionsAfterC) {
+                Log-Message "Found $($partitionsAfterC.Count) partition(s) after C: drive"
+                foreach ($part in $partitionsAfterC) {
+                    $sizeGB = [math]::Round($part.Size / 1GB, 2)
+                    $offsetGB = [math]::Round($part.Offset / 1GB, 2)
+                    $type = if ($part.Type -eq "Recovery") { "Recovery" } 
+                           elseif ($part.IsSystem) { "System" }
+                           elseif ($part.GptType -match "de94bba4") { "Recovery" }
+                           else { "Unknown" }
+                    Log-Message "- Partition at $offsetGB GB: $sizeGB GB ($type)"
+                }
+                
+                # Find the first partition after C: (usually recovery)
+                $firstPartitionAfterC = $partitionsAfterC | Sort-Object Offset | Select-Object -First 1
+                $recoveryOffset = $firstPartitionAfterC.Offset
+                $recoveryOffsetGB = [math]::Round($recoveryOffset / 1GB, 2)
+                
+                # Calculate available space between C: and recovery partition
+                $availableSpace = $recoveryOffset - $cPartitionEnd
+                $availableSpaceGB = [math]::Round($availableSpace / 1GB, 2)
+                
+                Log-Message "Available space between C: and recovery partition: $availableSpaceGB GB"
+                
+                # Calculate where to place boot partition (just before recovery)
+                $bootPartitionSize = $script:MinPartitionSizeGB * 1GB
+                
+                # Account for disk alignment (Windows typically uses 1MB alignment)
+                $alignmentSize = 1MB
+                
+                # Calculate the exact position
+                # Boot partition should end where recovery begins (with small buffer)
+                $bufferSize = 16 * 1MB  # 16MB buffer for safety and alignment
+                $bootPartitionEndOffset = $recoveryOffset - $bufferSize
+                $bootPartitionOffset = $bootPartitionEndOffset - $bootPartitionSize
+                
+                # Ensure offset is aligned to 1MB boundary
+                $bootPartitionOffset = [Math]::Floor($bootPartitionOffset / $alignmentSize) * $alignmentSize
+                
+                # Verify we have enough space
+                if ($bootPartitionOffset -lt ($cPartitionEnd + $alignmentSize)) {
+                    throw "Not enough space between C: and recovery partition"
+                }
+                
+                # Calculate actual Linux space
+                $linuxSpace = $bootPartitionOffset - $cPartitionEnd
+                $linuxSpaceGB = [math]::Round($linuxSpace / 1GB, 2)
+                
+                Log-Message "Unallocated space starts at: $([math]::Round($cPartitionEnd / 1GB, 2)) GB"
+                Log-Message "Boot partition will start at: $([math]::Round($bootPartitionOffset / 1GB, 2)) GB"
+                Log-Message "Recovery partition starts at: $recoveryOffsetGB GB"
+                Log-Message "Linux will have $linuxSpaceGB GB of unallocated space"
+                
+            } else {
+                Log-Message "No partitions found after C: drive"
+                # Place boot partition at end of unallocated space as originally planned
+                $bootPartitionOffset = $cPartitionEnd + ($linuxSizeGB * 1GB)
+            }
+            
+            # Create boot partition using diskpart with specific offset
+            Log-Message "Creating boot partition..."
+            
+            $offsetMB = [int]($bootPartitionOffset / 1MB)
+            $sizeMB = [int]($script:MinPartitionSizeGB * 1024)
+            
+            Log-Message "Attempting to create partition at offset: $([math]::Round($bootPartitionOffset / 1GB, 2)) GB"
+            
+            # Try multiple attempts with different offsets if needed
+            $attempts = @(
+                @{Offset = $offsetMB; Description = "Calculated position (just before recovery)"},
+                @{Offset = $offsetMB - 1024; Description = "1GB before calculated position"},
+                @{Offset = $offsetMB - 2048; Description = "2GB before calculated position"},
+                @{Offset = $offsetMB - 5120; Description = "5GB before calculated position"},
+                @{Offset = $offsetMB - 10240; Description = "10GB before calculated position"}
+            )
+            
+            $partitionCreated = $false
+            $successfulOffset = 0
+            
+            foreach ($attempt in $attempts) {
+                Log-Message "Attempt: $($attempt.Description)"
+                Log-Message "Trying offset: $([math]::Round($attempt.Offset * 1MB / 1GB, 2)) GB"
+                
+                $diskpartScript = @"
+select disk $($script:CDriveInfo.DiskNumber)
+create partition primary offset=$($attempt.Offset) size=$sizeMB
+assign
+exit
+"@
+                $scriptPath = "$env:TEMP\create_boot_partition.txt"
+                $diskpartScript | Out-File -FilePath $scriptPath -Encoding ASCII
+                
+                $result = & diskpart /s $scriptPath 2>&1
+                Remove-Item $scriptPath -Force
+                
+                $resultString = $result -join "`n"
+                
+                if ($resultString -match "successfully created" -or $resultString -match "DiskPart successfully created") {
+                    Log-Message "Success! Boot partition created at offset $([math]::Round($attempt.Offset * 1MB / 1GB, 2)) GB"
+                    $partitionCreated = $true
+                    $successfulOffset = $attempt.Offset * 1MB
+                    break
+                } else {
+                    if ($resultString -match "not enough usable space") {
+                        Log-Message "Not enough space at this offset, trying next position..."
+                    } else {
+                        Log-Message "Failed with error: $($resultString | Select-String -Pattern 'error' -SimpleMatch)"
+                    }
+                }
+            }
+            
+            # Alternative approach: try to create partition without specifying offset
+            # Let Windows place it, then check if we can influence the placement
+            
+            if (-not $partitionCreated) {
+                Log-Message "Offset-based creation failed. Trying alternative approach..."
+                
+                # First, let's see exactly what space is available
+                Log-Message "Analyzing available space..."
+                
+                # Get current partitions after shrinking
+                $currentPartitions = Get-Partition -DiskNumber $script:CDriveInfo.DiskNumber | Sort-Object Offset
+                $cPartition = $currentPartitions | Where-Object { $_.DriveLetter -eq 'C' }
+                $cEndOffset = $cPartition.Offset + $cPartition.Size
+                
+                # Find the recovery partition
+                $recoveryPartition = $currentPartitions | Where-Object { 
+                    $_.Type -eq "Recovery" -or $_.GptType -match "de94bba4"
+                } | Sort-Object Offset | Select-Object -First 1
+                
+                if ($recoveryPartition) {
+                    $gapSize = $recoveryPartition.Offset - $cEndOffset
+                    $gapSizeGB = [math]::Round($gapSize / 1GB, 2)
+                    Log-Message "Gap between C: and Recovery: $gapSizeGB GB"
+                    
+                    # Try creating a large partition to fill most of the gap
+                    # This might force Windows to place the boot partition at the end
+                    $fillerSize = $gapSize - ($script:MinPartitionSizeGB * 1GB) - (1GB)  # Leave space for boot + buffer
+                    $fillerSizeGB = [math]::Round($fillerSize / 1GB, 2)
+                    
+                    if ($fillerSize -gt 0) {
+                        Log-Message "Attempting workaround: Creating filler partition of $fillerSizeGB GB"
+                        
+                        try {
+                            # Create large partition (no drive letter)
+                            $fillerPartition = New-Partition -DiskNumber $script:CDriveInfo.DiskNumber `
+                                -Size $fillerSize `
+                                -ErrorAction Stop
+                            
+                            Log-Message "Filler partition created. Now creating boot partition..."
+                            
+                            # Now create boot partition (should go at the end)
+                            $bootPartition = New-Partition -DiskNumber $script:CDriveInfo.DiskNumber `
+                                -Size ($script:MinPartitionSizeGB * 1GB) `
+                                -AssignDriveLetter `
+                                -ErrorAction Stop
+                            
+                            # Delete the filler partition
+                            Log-Message "Removing filler partition..."
+                            Remove-Partition -DiskNumber $script:CDriveInfo.DiskNumber `
+                                -PartitionNumber $fillerPartition.PartitionNumber `
+                                -Confirm:$false `
+                                -ErrorAction Stop
+                            
+                            Log-Message "Filler partition removed. Boot partition should now be at end."
+                            $partitionCreated = $true
+                            
+                            # Get the drive letter
+                            $driveLetter = $bootPartition.DriveLetter
+                            
+                            if (-not $driveLetter) {
+                                # Wait and retry
+                                Start-Sleep -Seconds 3
+                                $bootPartition = Get-Partition -DiskNumber $script:CDriveInfo.DiskNumber -PartitionNumber $bootPartition.PartitionNumber
+                                $driveLetter = $bootPartition.DriveLetter
+                            }
+                            
+                        }
+                        catch {
+                            Log-Message "Workaround failed: $_" -Error
+                        }
+                    }
+                }
+            }
+            
+            if ($partitionCreated -and $driveLetter) {
+                Log-Message "Boot partition created successfully!"
+                
+                # Wait for the partition to be recognized
+                Start-Sleep -Seconds 3
+                
+                # Find the new partition - look for one around 7GB in size
+                $targetSize = $script:MinPartitionSizeGB * 1GB
+                $tolerance = 100 * 1MB  # 100MB tolerance
+                
+                $newPartitions = Get-Partition -DiskNumber $script:CDriveInfo.DiskNumber | 
+                    Where-Object { [Math]::Abs($_.Size - $targetSize) -lt $tolerance }
+                
+                # Get the one with the highest offset (should be our new one)
+                $bootPartition = $newPartitions | Sort-Object Offset | Select-Object -Last 1
+                
+                if (-not $bootPartition) {
+                    # Fallback: look for newest partition by checking all partitions
+                    $allPartsAfter = Get-Partition -DiskNumber $script:CDriveInfo.DiskNumber | 
+                        Where-Object { $_.Offset -ge $bootPartitionOffset - (10 * 1MB) }
+                    $bootPartition = $allPartsAfter | Sort-Object Offset | Select-Object -First 1
+                }
+                
+                # Get drive letter
+                $driveLetter = $bootPartition.DriveLetter
+                
+                if (-not $driveLetter) {
+                    Log-Message "Waiting for drive letter assignment..."
+                    Start-Sleep -Seconds 5
+                    
+                    # Re-check
+                    $bootPartition = Get-Partition -DiskNumber $script:CDriveInfo.DiskNumber -PartitionNumber $bootPartition.PartitionNumber
+                    $driveLetter = $bootPartition.DriveLetter
+                    
+                    if (-not $driveLetter) {
+                        # Try to assign manually
+                        $bootPartition | Add-PartitionAccessPath -AssignDriveLetter
+                        Start-Sleep -Seconds 2
+                        $bootPartition = Get-Partition -DiskNumber $script:CDriveInfo.DiskNumber -PartitionNumber $bootPartition.PartitionNumber
+                        $driveLetter = $bootPartition.DriveLetter
+                    }
+                }
+                
+                if (-not $driveLetter) {
+                    throw "Failed to get drive letter for boot partition"
+                }
+                
+                Log-Message "Formatting boot partition as FAT32..."
+                
+                # Format as FAT32
+                Format-Volume -DriveLetter $driveLetter `
+                    -FileSystem FAT32 `
+                    -NewFileSystemLabel "LINUXMINT" `
+                    -Confirm:$false `
+                    -ErrorAction Stop
+                
+                Log-Message "Boot partition created and assigned to ${driveLetter}:"
+                $script:NewDrive = "${driveLetter}:"
+                
+                # Verify and log final partition layout
+                Log-Message ""
+                Log-Message "=== Final Disk Layout ==="
+                $finalPartitions = Get-Partition -DiskNumber $script:CDriveInfo.DiskNumber | Sort-Object Offset
+                
+                $previousEnd = 0
+                foreach ($part in $finalPartitions) {
+                    $sizeGB = [math]::Round($part.Size / 1GB, 2)
+                    $offsetGB = [math]::Round($part.Offset / 1GB, 2)
+                    $endGB = [math]::Round(($part.Offset + $part.Size) / 1GB, 2)
+                    
+                    # Check for gap before this partition
+                    if ($part.Offset -gt $previousEnd + (1 * 1MB)) {
+                        $gapSize = [math]::Round(($part.Offset - $previousEnd) / 1GB, 2)
+                        if ($gapSize -gt 0.1) {  # Only show gaps larger than 100MB
+                            Log-Message "[Unallocated: $gapSize GB]"
+                        }
+                    }
+                    
+                    $label = if ($part.DriveLetter) { "Drive $($part.DriveLetter):" } 
+                            elseif ($part.Type -eq "Recovery" -or $part.GptType -match "de94bba4") { "(Recovery)" }
+                            elseif ($part.IsSystem) { "(System)" }
+                            else { "(No letter)" }
+                    
+                    Log-Message "Partition $($part.PartitionNumber): $label - Size: $sizeGB GB - Location: $offsetGB-$endGB GB"
+                    
+                    $previousEnd = $part.Offset + $part.Size
+                }
+                
+                # Check for trailing unallocated space
+                if ($disk.Size -gt $previousEnd + (1 * 1MB)) {
+                    $trailingGap = [math]::Round(($disk.Size - $previousEnd) / 1GB, 2)
+                    if ($trailingGap -gt 0.1) {
+                        Log-Message "[Unallocated: $trailingGap GB]"
+                    }
+                }
+                
+                Log-Message ""
+                Log-Message "Boot partition successfully placed before recovery partition!"
+                Log-Message "Linux can use the unallocated space between C: and the boot partition"
+                
+            } else {
+                Log-Message "Diskpart output: $resultString" -Error
+                throw "Failed to create boot partition at specified offset"
+            }
         }
         catch {
-            Log-Message "Failed to create partition: $_" -Error
-            return
+            Log-Message "Failed to create boot partition at end: $_" -Error
+            Log-Message "Will create boot partition at beginning of free space instead" -Error
+            
+            # Fallback: create partition without specific offset
+            try {
+                $newPartition = New-Partition -DiskNumber $script:CDriveInfo.DiskNumber `
+                    -Size ($script:MinPartitionSizeGB * 1GB) `
+                    -AssignDriveLetter `
+                    -ErrorAction Stop
+                
+                $driveLetter = $newPartition.DriveLetter
+                
+                # Format as FAT32
+                Format-Volume -DriveLetter $driveLetter `
+                    -FileSystem FAT32 `
+                    -NewFileSystemLabel "LINUXMINT" `
+                    -Confirm:$false `
+                    -ErrorAction Stop
+                
+                Log-Message "Boot partition created using fallback method and assigned to ${driveLetter}:"
+                $script:NewDrive = "${driveLetter}:"
+                
+                Log-Message "Note: Boot partition is at the beginning of unallocated space, not at the end"
+                Log-Message "The unallocated space for Linux will be after the boot partition"
+                
+                # Show final layout
+                Log-Message ""
+                Log-Message "=== Final Disk Layout ==="
+                $finalPartitions = Get-Partition -DiskNumber $script:CDriveInfo.DiskNumber | Sort-Object Offset
+                foreach ($part in $finalPartitions) {
+                    $sizeGB = [math]::Round($part.Size / 1GB, 2)
+                    $label = if ($part.DriveLetter) { "Drive $($part.DriveLetter):" } 
+                            elseif ($part.Type -eq "Recovery" -or $part.GptType -match "de94bba4") { "(Recovery)" }
+                            elseif ($part.IsSystem) { "(System)" }
+                            else { "(No letter)" }
+                    Log-Message "- ${label}: $sizeGB GB"
+                }
+            }
+            catch {
+                Log-Message "Fallback method also failed: $_" -Error
+                return
+            }
         }
         
         # Mount ISO
@@ -681,9 +1005,14 @@ UEFI Boot Setup Instructions for Linux Mint
 
 Your Linux Mint bootable partition has been created successfully!
 
-Partition Details:
-- Drive: $script:NewDrive
-- Disk: $($script:CDriveInfo.DiskNumber)
+Disk Layout:
+- Windows C: drive (shrunk)
+- Unallocated space: $linuxSizeGB GB (for Linux installation)
+- Boot Drive: $script:NewDrive (7 GB, FAT32) at end of disk
+- Disk Number: $($script:CDriveInfo.DiskNumber)
+
+Important: The disk now has unallocated space in the middle that
+the Linux Mint installer will automatically detect and use.
 
 To boot Linux Mint:
 
@@ -706,6 +1035,12 @@ To boot Linux Mint:
 
 5. The system should now boot into Linux Mint Live environment
 
+6. During Linux Mint installation:
+   - The installer will automatically find the $linuxSizeGB GB unallocated space
+   - Choose "Install alongside Windows" or use manual partitioning
+   - The installer will create the necessary Linux partitions in that space
+   - The bootloader will be configured automatically
+
 Note: The Windows Boot Manager entry was NOT modified to prevent boot issues.
       Use the UEFI boot menu to select between Windows and Linux Mint.
 
@@ -713,6 +1048,8 @@ Troubleshooting:
 - If you don't see the Linux Mint option, try disabling Fast Boot
 - Some systems require you to manually add a boot entry pointing to:
   \EFI\BOOT\BOOTx64.EFI on the LINUXMINT partition
+- If the installer doesn't see the unallocated space, use the manual
+  partitioning option and create your partitions in the free space
 "@
         
         # Save instructions
@@ -723,8 +1060,15 @@ Troubleshooting:
         Log-Message "====================================="
         Log-Message "Installation Complete!"
         Log-Message "====================================="
-        Log-Message "Linux Mint has been installed to drive $script:NewDrive"
-        Log-Message "Reserved $linuxSizeGB GB for full Linux installation"
+        Log-Message "Linux Mint boot partition created at drive $script:NewDrive"
+        Log-Message ""
+        Log-Message "*** DISK LAYOUT ***"
+        Log-Message "1. Windows C: drive (shrunk)"
+        Log-Message "2. Unallocated space: $linuxSizeGB GB (middle)"
+        Log-Message "3. Boot partition: $script:NewDrive - 7 GB (end)"
+        Log-Message ""
+        Log-Message "The unallocated space is ready for Linux Mint installation."
+        Log-Message "The installer will automatically detect and use this space."
         Log-Message ""
         Log-Message "*** IMPORTANT BOOT INSTRUCTIONS ***"
         Log-Message "The Windows Boot Manager was NOT modified."
