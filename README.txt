@@ -13,3 +13,5 @@ You may have to disable Secure Boot in the BIOS depending on your computer.
 Currently the installer supports installation of Linux Mint 22.1 Cinnamon.
 
 Released under GNU General Public License v3.0. You are free to do whatever you like with the source except distribute a closed source version.
+
+Website: https://rltvty.net/installlinux.html
