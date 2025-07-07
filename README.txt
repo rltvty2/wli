@@ -10,7 +10,7 @@ After the installation is complete, you will have to give the new boot entry pri
 
 You may have to disable Secure Boot in the BIOS depending on your computer.
 
-To create a persistent installation after creating the live partition in Kubuntu, run the installer, and then when the partitioning option comes up choose replace partition and choose the free space created by the windows linux installer.
+To create a persistent Kubuntu installation after creating the live partition, run the installer, and then when the partitioning option comes up choose replace partition and choose the free space created by the windows linux installer.
 
 For Linux Mint the process is a bit more involved. You must click on the install Linux Mint icon on the desktop from within the live partition Linux Mint OS. Once the partitioning screen comes up you must create a swap area (recommended 8 GB at the end of the free space), and an ext4 file system in the rest of the free space at /
 
