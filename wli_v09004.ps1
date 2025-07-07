@@ -1,6 +1,6 @@
-# Linux Mint 22.1 Partition Installer for Windows 11 UEFI Systems
+# Linux Installer for Windows 11 UEFI Systems - Kubuntu/Mint Edition
 # PowerShell GUI Version - Modified to place partition at end of free space
-# Run as Administrator: powershell -ExecutionPolicy Bypass -File mint_installer.ps1
+# Run as Administrator: powershell -ExecutionPolicy Bypass -File linux_installer.ps1
 
 #Requires -RunAsAdministrator
 #Requires -Version 5.1
@@ -13,6 +13,10 @@ Add-Type -AssemblyName System.Drawing
 # Global variables
 $script:MinPartitionSizeGB = 7
 $script:MinLinuxSizeGB = 20
+$script:KubuntuMirrors = @(
+    "https://cdimage.ubuntu.com/kubuntu/releases/25.04/release/kubuntu-25.04-desktop-amd64.iso",
+    "https://www.mirrorservice.org/sites/cdimage.ubuntu.com/cdimage/kubuntu/releases/25.04/release/kubuntu-25.04-desktop-amd64.iso"
+)
 $script:MintMirrors = @(
     "https://mirrors.kernel.org/linuxmint/stable/22.1/linuxmint-22.1-cinnamon-64bit.iso",
     "https://mirror.csclub.uwaterloo.ca/linuxmint/stable/22.1/linuxmint-22.1-cinnamon-64bit.iso",
@@ -20,13 +24,14 @@ $script:MintMirrors = @(
     "https://mirror.arizona.edu/linuxmint/stable/22.1/linuxmint-22.1-cinnamon-64bit.iso"
 )
 
-$script:IsoPath = "$env:TEMP\linuxmint-22.1.iso"
+$script:IsoPath = ""
 $script:IsRunning = $false
+$script:SelectedDistro = "Kubuntu"
 
 # Create main form
 $form = New-Object System.Windows.Forms.Form
 $form.Text = "Windows -> Linux Installer"
-$form.Size = New-Object System.Drawing.Size(720, 620)
+$form.Size = New-Object System.Drawing.Size(720, 660)
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "FixedSingle"
 $form.MaximizeBox = $false
@@ -56,27 +61,52 @@ $statusLabel.Size = New-Object System.Drawing.Size(680, 20)
 $statusLabel.TextAlign = "MiddleCenter"
 $form.Controls.Add($statusLabel)
 
+# Distribution selection group
+$distroGroup = New-Object System.Windows.Forms.GroupBox
+$distroGroup.Text = "Select Linux Distribution"
+$distroGroup.Font = $normalFont
+$distroGroup.Location = New-Object System.Drawing.Point(10, 75)
+$distroGroup.Size = New-Object System.Drawing.Size(680, 60)
+$form.Controls.Add($distroGroup)
+
+# Kubuntu radio button
+$kubuntuRadio = New-Object System.Windows.Forms.RadioButton
+$kubuntuRadio.Text = "Kubuntu 25.04 (KDE Plasma)"
+$kubuntuRadio.Font = $normalFont
+$kubuntuRadio.Location = New-Object System.Drawing.Point(20, 25)
+$kubuntuRadio.Size = New-Object System.Drawing.Size(280, 20)
+$kubuntuRadio.Checked = $true
+$distroGroup.Controls.Add($kubuntuRadio)
+
+# Mint radio button
+$mintRadio = New-Object System.Windows.Forms.RadioButton
+$mintRadio.Text = "Linux Mint 22.1 (Cinnamon)"
+$mintRadio.Font = $normalFont
+$mintRadio.Location = New-Object System.Drawing.Point(350, 25)
+$mintRadio.Size = New-Object System.Drawing.Size(280, 20)
+$distroGroup.Controls.Add($mintRadio)
+
 # Disk info group
 $diskGroup = New-Object System.Windows.Forms.GroupBox
 $diskGroup.Text = "Disk Information"
 $diskGroup.Font = $normalFont
-$diskGroup.Location = New-Object System.Drawing.Point(10, 75)
-$diskGroup.Size = New-Object System.Drawing.Size(330, 130)  # Increased height from 120 to 130
+$diskGroup.Location = New-Object System.Drawing.Point(10, 145)
+$diskGroup.Size = New-Object System.Drawing.Size(330, 130)
 $form.Controls.Add($diskGroup)
 
 # Disk info text
 $diskInfoText = New-Object System.Windows.Forms.Label
 $diskInfoText.Font = $normalFont
 $diskInfoText.Location = New-Object System.Drawing.Point(10, 20)
-$diskInfoText.Size = New-Object System.Drawing.Size(310, 100)  # Increased height from 90 to 100
+$diskInfoText.Size = New-Object System.Drawing.Size(310, 100)
 $diskGroup.Controls.Add($diskInfoText)
 
 # Size selection group
 $sizeGroup = New-Object System.Windows.Forms.GroupBox
 $sizeGroup.Text = "Linux Partition Size"
 $sizeGroup.Font = $normalFont
-$sizeGroup.Location = New-Object System.Drawing.Point(360, 75)
-$sizeGroup.Size = New-Object System.Drawing.Size(330, 130)  # Increased to match disk group
+$sizeGroup.Location = New-Object System.Drawing.Point(360, 145)
+$sizeGroup.Size = New-Object System.Drawing.Size(330, 130)
 $form.Controls.Add($sizeGroup)
 
 # Size label
@@ -107,7 +137,7 @@ $sizeGroup.Controls.Add($sizeHelpLabel)
 
 # Progress bar
 $progressBar = New-Object System.Windows.Forms.ProgressBar
-$progressBar.Location = New-Object System.Drawing.Point(10, 215)  # Moved down 10 pixels
+$progressBar.Location = New-Object System.Drawing.Point(10, 285)
 $progressBar.Size = New-Object System.Drawing.Size(680, 25)
 $progressBar.Style = "Continuous"
 $form.Controls.Add($progressBar)
@@ -116,8 +146,8 @@ $form.Controls.Add($progressBar)
 $logGroup = New-Object System.Windows.Forms.GroupBox
 $logGroup.Text = "Installation Log"
 $logGroup.Font = $normalFont
-$logGroup.Location = New-Object System.Drawing.Point(10, 250)  # Moved down 10 pixels
-$logGroup.Size = New-Object System.Drawing.Size(680, 250)  # Reduced height by 10
+$logGroup.Location = New-Object System.Drawing.Point(10, 320)
+$logGroup.Size = New-Object System.Drawing.Size(680, 250)
 $form.Controls.Add($logGroup)
 
 # Log text box
@@ -127,14 +157,14 @@ $logBox.ScrollBars = "Vertical"
 $logBox.ReadOnly = $true
 $logBox.Font = New-Object System.Drawing.Font("Consolas", 9)
 $logBox.Location = New-Object System.Drawing.Point(10, 20)
-$logBox.Size = New-Object System.Drawing.Size(660, 220)  # Reduced height by 10
+$logBox.Size = New-Object System.Drawing.Size(660, 220)
 $logGroup.Controls.Add($logBox)
 
 # Delete ISO checkbox
 $deleteIsoCheck = New-Object System.Windows.Forms.CheckBox
 $deleteIsoCheck.Text = "Delete ISO file after installation"
 $deleteIsoCheck.Font = $normalFont
-$deleteIsoCheck.Location = New-Object System.Drawing.Point(10, 510)
+$deleteIsoCheck.Location = New-Object System.Drawing.Point(10, 580)
 $deleteIsoCheck.Size = New-Object System.Drawing.Size(300, 25)
 $form.Controls.Add($deleteIsoCheck)
 
@@ -142,7 +172,7 @@ $form.Controls.Add($deleteIsoCheck)
 $startButton = New-Object System.Windows.Forms.Button
 $startButton.Text = "Start Installation"
 $startButton.Font = $boldFont
-$startButton.Location = New-Object System.Drawing.Point(400, 505)
+$startButton.Location = New-Object System.Drawing.Point(400, 575)
 $startButton.Size = New-Object System.Drawing.Size(140, 35)
 $startButton.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 215)
 $startButton.ForeColor = [System.Drawing.Color]::White
@@ -153,7 +183,7 @@ $form.Controls.Add($startButton)
 $exitButton = New-Object System.Windows.Forms.Button
 $exitButton.Text = "Exit"
 $exitButton.Font = $normalFont
-$exitButton.Location = New-Object System.Drawing.Point(550, 505)
+$exitButton.Location = New-Object System.Drawing.Point(550, 575)
 $exitButton.Size = New-Object System.Drawing.Size(140, 35)
 $form.Controls.Add($exitButton)
 
@@ -263,15 +293,29 @@ Partition Number: $(if ($partition.PartitionNumber -ne $null) { $partition.Parti
     }
 }
 
-function Download-LinuxMint {
-    param([string]$Destination)
+function Download-LinuxISO {
+    param(
+        [string]$Destination,
+        [string]$Distribution
+    )
     
-    Log-Message "Downloading Linux Mint 22.1 ISO (approximately 2.9 GB)..."
+    # Select mirrors based on distribution
+    if ($Distribution -eq "Kubuntu") {
+        $mirrors = $script:KubuntuMirrors
+        $isoName = "Kubuntu 25.04"
+        $expectedSize = "approximately 4.8 GB"
+    } else {
+        $mirrors = $script:MintMirrors
+        $isoName = "Linux Mint 22.1"
+        $expectedSize = "approximately 2.9 GB"
+    }
+    
+    Log-Message "Downloading $isoName ISO ($expectedSize)..."
     Log-Message "This may take a while depending on your internet speed..."
     
-    foreach ($i in 0..($script:MintMirrors.Count - 1)) {
-        $mirror = $script:MintMirrors[$i]
-        Log-Message "Trying mirror $($i + 1)/$($script:MintMirrors.Count): $($mirror.Split('/')[2])"
+    foreach ($i in 0..($mirrors.Count - 1)) {
+        $mirror = $mirrors[$i]
+        Log-Message "Trying mirror $($i + 1)/$($mirrors.Count): $($mirror.Split('/')[2])"
         Set-Status "Connecting to mirror..."
         
         try {
@@ -365,7 +409,7 @@ function Download-LinuxMint {
                 } catch {}
             }
             
-            if ($i -lt $script:MintMirrors.Count - 1) {
+            if ($i -lt $mirrors.Count - 1) {
                 Log-Message "Trying next mirror..."
             }
         }
@@ -373,6 +417,13 @@ function Download-LinuxMint {
     
     # If all mirrors fail, provide manual download option
     Log-Message "All automatic download attempts failed" -Error
+    
+    $downloadUrl = if ($Distribution -eq "Kubuntu") {
+        "https://kubuntu.org/getkubuntu/"
+    } else {
+        "https://linuxmint.com/download.php"
+    }
+    
     $response = [System.Windows.Forms.MessageBox]::Show(
         "Automatic download failed. Would you like to:`n`n" +
         "- Download manually from your browser?`n" +
@@ -385,8 +436,8 @@ function Download-LinuxMint {
     )
     
     if ($response -eq [System.Windows.Forms.DialogResult]::Yes) {
-        Start-Process "https://linuxmint.com/download.php"
-        Log-Message "Please download Linux Mint 22.1 Cinnamon 64-bit and save it as:"
+        Start-Process $downloadUrl
+        Log-Message "Please download $isoName and save it as:"
         Log-Message $Destination
         Log-Message "Then run the installer again"
     }
@@ -404,8 +455,20 @@ function Start-Installation {
     $exitButton.Enabled = $false
     $sizeNumeric.Enabled = $false
     $deleteIsoCheck.Enabled = $false
+    $kubuntuRadio.Enabled = $false
+    $mintRadio.Enabled = $false
     
     try {
+        # Get selected distribution
+        $script:SelectedDistro = if ($kubuntuRadio.Checked) { "Kubuntu" } else { "Mint" }
+        $script:IsoPath = if ($script:SelectedDistro -eq "Kubuntu") {
+            "$env:TEMP\kubuntu-25.04.iso"
+        } else {
+            "$env:TEMP\linuxmint-22.1.iso"
+        }
+        
+        Log-Message "Selected distribution: $script:SelectedDistro"
+        
         # Get Linux size
         $linuxSizeGB = $sizeNumeric.Value
         $totalNeededGB = $linuxSizeGB + $script:MinPartitionSizeGB
@@ -433,9 +496,9 @@ function Start-Installation {
                     Log-Message "Deleting corrupted file..." -Error
                     Remove-Item $script:IsoPath -Force
                     
-                    Set-Status "Re-downloading Linux Mint ISO..."
-                    if (-not (Download-LinuxMint -Destination $script:IsoPath)) {
-                        Log-Message "Failed to download Linux Mint ISO!" -Error
+                    Set-Status "Re-downloading $script:SelectedDistro ISO..."
+                    if (-not (Download-LinuxISO -Destination $script:IsoPath -Distribution $script:SelectedDistro)) {
+                        Log-Message "Failed to download $script:SelectedDistro ISO!" -Error
                         return
                     }
                 } else {
@@ -458,9 +521,9 @@ function Start-Installation {
                         
                         if ($response -eq [System.Windows.Forms.DialogResult]::Yes) {
                             Remove-Item $script:IsoPath -Force
-                            Set-Status "Re-downloading Linux Mint ISO..."
-                            if (-not (Download-LinuxMint -Destination $script:IsoPath)) {
-                                Log-Message "Failed to download Linux Mint ISO!" -Error
+                            Set-Status "Re-downloading $script:SelectedDistro ISO..."
+                            if (-not (Download-LinuxISO -Destination $script:IsoPath -Distribution $script:SelectedDistro)) {
+                                Log-Message "Failed to download $script:SelectedDistro ISO!" -Error
                                 return
                             }
                         } else {
@@ -475,9 +538,9 @@ function Start-Installation {
                 return
             }
         } else {
-            Set-Status "Downloading Linux Mint ISO..."
-            if (-not (Download-LinuxMint -Destination $script:IsoPath)) {
-                Log-Message "Failed to download Linux Mint ISO!" -Error
+            Set-Status "Downloading $script:SelectedDistro ISO..."
+            if (-not (Download-LinuxISO -Destination $script:IsoPath -Distribution $script:SelectedDistro)) {
+                Log-Message "Failed to download $script:SelectedDistro ISO!" -Error
                 return
             }
         }
@@ -771,10 +834,13 @@ exit
                 
                 Log-Message "Formatting boot partition as FAT32..."
                 
+                # Set volume label based on distribution
+                $volumeLabel = if ($script:SelectedDistro -eq "Kubuntu") { "KUBUNTU" } else { "LINUXMINT" }
+                
                 # Format as FAT32
                 Format-Volume -DriveLetter $driveLetter `
                     -FileSystem FAT32 `
-                    -NewFileSystemLabel "LINUXMINT" `
+                    -NewFileSystemLabel $volumeLabel `
                     -Confirm:$false `
                     -ErrorAction Stop
                 
@@ -840,10 +906,13 @@ exit
                 
                 $driveLetter = $newPartition.DriveLetter
                 
+                # Set volume label based on distribution
+                $volumeLabel = if ($script:SelectedDistro -eq "Kubuntu") { "KUBUNTU" } else { "LINUXMINT" }
+                
                 # Format as FAT32
                 Format-Volume -DriveLetter $driveLetter `
                     -FileSystem FAT32 `
-                    -NewFileSystemLabel "LINUXMINT" `
+                    -NewFileSystemLabel $volumeLabel `
                     -Confirm:$false `
                     -ErrorAction Stop
                 
@@ -901,11 +970,17 @@ exit
             Log-Message "ISO mounted at $sourceDrive"
             
             # Verify mount by checking for expected files
-            if (-not (Test-Path "$sourceDrive\casper\vmlinuz")) {
-                Log-Message "Warning: ISO might not be a valid Linux Mint image (missing casper/vmlinuz)" -Error
+            $validationFile = if ($script:SelectedDistro -eq "Kubuntu") { 
+                "$sourceDrive\casper\vmlinuz"
+            } else { 
+                "$sourceDrive\casper\vmlinuz" 
+            }
+            
+            if (-not (Test-Path $validationFile)) {
+                Log-Message "Warning: ISO might not be a valid $script:SelectedDistro image (missing expected files)" -Error
                 
                 $response = [System.Windows.Forms.MessageBox]::Show(
-                    "The ISO doesn't appear to be a valid Linux Mint image. Continue anyway?",
+                    "The ISO doesn't appear to be a valid $script:SelectedDistro image. Continue anyway?",
                     "Invalid ISO",
                     [System.Windows.Forms.MessageBoxButtons]::YesNo,
                     [System.Windows.Forms.MessageBoxIcon]::Warning
@@ -933,8 +1008,8 @@ exit
                     Remove-Item $script:IsoPath -Force
                     Log-Message "Deleted corrupted ISO"
                     
-                    Set-Status "Re-downloading Linux Mint ISO..."
-                    if (Download-LinuxMint -Destination $script:IsoPath) {
+                    Set-Status "Re-downloading $script:SelectedDistro ISO..."
+                    if (Download-LinuxISO -Destination $script:IsoPath -Distribution $script:SelectedDistro) {
                         # Try mounting again
                         Start-Installation
                         return
@@ -948,7 +1023,7 @@ exit
         
         # Copy files
         Set-Status "Copying files..."
-        Log-Message "Copying Linux Mint files to $script:NewDrive..."
+        Log-Message "Copying $script:SelectedDistro files to $script:NewDrive..."
         Log-Message "This may take 10-20 minutes..."
         
         try {
@@ -1000,10 +1075,10 @@ exit
         
         # Create boot instructions
         $instructions = @"
-UEFI Boot Setup Instructions for Linux Mint
+UEFI Boot Setup Instructions for $script:SelectedDistro
 ==========================================
 
-Your Linux Mint bootable partition has been created successfully!
+Your $script:SelectedDistro bootable partition has been created successfully!
 
 Disk Layout:
 - Windows C: drive (shrunk)
@@ -1012,9 +1087,9 @@ Disk Layout:
 - Disk Number: $($script:CDriveInfo.DiskNumber)
 
 Important: The disk now has unallocated space in the middle that
-the Linux Mint installer will automatically detect and use.
+the $script:SelectedDistro installer will automatically detect and use.
 
-To boot Linux Mint:
+To boot $script:SelectedDistro:
 
 1. Restart your computer
 
@@ -1024,7 +1099,7 @@ To boot Linux Mint:
 
 3. In UEFI settings:
    - Look for "Boot" or "Boot Order" section
-   - Find the Linux Mint entry (may appear as "UEFI: $script:NewDrive LINUXMINT")
+   - Find the $script:SelectedDistro entry (may appear as "UEFI: $script:NewDrive $($volumeLabel)")
    - Set it as the first boot priority
    - OR use the one-time boot menu (usually F12) to select it
 
@@ -1033,54 +1108,54 @@ To boot Linux Mint:
    - Ensure UEFI mode is enabled (not Legacy/CSM)
    - Save changes and exit
 
-5. The system should now boot into Linux Mint Live environment
+5. The system should now boot into $script:SelectedDistro Live environment
 
-6. During Linux Mint installation:
+6. During $script:SelectedDistro installation:
    - The installer will automatically find the $linuxSizeGB GB unallocated space
    - Choose "Install alongside Windows" or use manual partitioning
    - The installer will create the necessary Linux partitions in that space
    - The bootloader will be configured automatically
 
 Note: The Windows Boot Manager entry was NOT modified to prevent boot issues.
-      Use the UEFI boot menu to select between Windows and Linux Mint.
+      Use the UEFI boot menu to select between Windows and $script:SelectedDistro.
 
 Troubleshooting:
-- If you don't see the Linux Mint option, try disabling Fast Boot
+- If you don't see the $script:SelectedDistro option, try disabling Fast Boot
 - Some systems require you to manually add a boot entry pointing to:
-  \EFI\BOOT\BOOTx64.EFI on the LINUXMINT partition
+  \EFI\BOOT\BOOTx64.EFI on the $($volumeLabel) partition
 - If the installer doesn't see the unallocated space, use the manual
   partitioning option and create your partitions in the free space
 "@
         
         # Save instructions
         $instructions | Out-File -FilePath "$script:NewDrive\UEFI_BOOT_INSTRUCTIONS.txt" -Encoding UTF8
-        $instructions | Out-File -FilePath "$env:USERPROFILE\Desktop\Linux_Mint_Boot_Instructions.txt" -Encoding UTF8
+        $instructions | Out-File -FilePath "$env:USERPROFILE\Desktop\${script:SelectedDistro}_Boot_Instructions.txt" -Encoding UTF8
         
         # Success
         Log-Message "====================================="
         Log-Message "Installation Complete!"
         Log-Message "====================================="
-        Log-Message "Linux Mint boot partition created at drive $script:NewDrive"
+        Log-Message "$script:SelectedDistro boot partition created at drive $script:NewDrive"
         Log-Message ""
         Log-Message "*** DISK LAYOUT ***"
         Log-Message "1. Windows C: drive (shrunk)"
         Log-Message "2. Unallocated space: $linuxSizeGB GB (middle)"
         Log-Message "3. Boot partition: $script:NewDrive - 7 GB (end)"
         Log-Message ""
-        Log-Message "The unallocated space is ready for Linux Mint installation."
+        Log-Message "The unallocated space is ready for $script:SelectedDistro installation."
         Log-Message "The installer will automatically detect and use this space."
         Log-Message ""
         Log-Message "*** IMPORTANT BOOT INSTRUCTIONS ***"
         Log-Message "The Windows Boot Manager was NOT modified."
-        Log-Message "To boot Linux Mint, use the UEFI boot menu:"
+        Log-Message "To boot $script:SelectedDistro, use the UEFI boot menu:"
         Log-Message "1. Restart your computer"
         Log-Message "2. Press F2, F10, F12, DEL, or ESC during startup"
-        Log-Message "3. Select the Linux Mint entry"
+        Log-Message "3. Select the $script:SelectedDistro entry"
         Log-Message "4. Make sure Secure Boot is disabled"
         Log-Message ""
         Log-Message "Instructions saved to:"
         Log-Message "- $script:NewDrive\UEFI_BOOT_INSTRUCTIONS.txt"
-        Log-Message "- Desktop\Linux_Mint_Boot_Instructions.txt"
+        Log-Message "- Desktop\${script:SelectedDistro}_Boot_Instructions.txt"
         
         Set-Status "Installation complete!"
         
@@ -1105,6 +1180,8 @@ Troubleshooting:
         $exitButton.Enabled = $true
         $sizeNumeric.Enabled = $true
         $deleteIsoCheck.Enabled = $true
+        $kubuntuRadio.Enabled = $true
+        $mintRadio.Enabled = $true
     }
 }
 
