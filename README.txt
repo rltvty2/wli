@@ -16,7 +16,7 @@ To create a persistent Kubuntu installation after creating the live partition, r
 
 For Linux Mint the process is a bit more involved. You must click on the install Linux Mint icon on the desktop from within the live partition Linux Mint OS. Once the partitioning screen comes up you must create a swap area (recommended 8 GB at the end of the free space), and an ext4 file system in the rest of the free space at /
 
-Currently the installer supports installation of Kubuntu 25.04 and Linux Mint 22.1 Cinnamon.
+Currently the installer supports installation of Kubuntu 25.04 and Linux Mint 22.1 Cinnamon. You may also use your own .iso files, but Debian and Fedora based distros don't work for now.
 
 Released under GNU General Public License v3.0. You are free to do whatever you like with the source except distribute a closed source version.
 
