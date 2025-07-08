@@ -1,4 +1,4 @@
-Install Linux from within Windows without a USB stick
+Install a bootable Linux partition to your hard drive from within Windows without a USB stick
 
 WARNING: This software is in alpha, and is not recommended for use on your main/critical PC.
 
