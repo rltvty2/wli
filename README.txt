@@ -2,7 +2,7 @@ Install a bootable Linux partition to your hard drive from within Windows withou
 
 WARNING: This software is in alpha, and is not recommended for use on your main/critical PC.
 
-You must download wli_v09011.bat and wli_v09011.ps1, right click on the .bat, and then run the program as administrator.
+You must download wli_v09012.bat and wli_v09012.ps1, right click on the .bat, and then run the program as administrator.
 
 You may have to disable bitlocker/decrypt your hard drive to use this software.
 
@@ -13,6 +13,8 @@ To create a persistent installation after installing the live image, you must cl
 Currently the installer supports the installation of Linux Mint 22.3 Cinnamon and Ubuntu 24.04.4 LTS. You may also use your own .iso files, but Debian and Fedora based distros don't work for now. Linux Mint Debian Edition is an exception.
 
 wli sets Linux as the default boot entry automatically.
+
+Under Linux Mint and Ubuntu Windows can be accessed upon booting by selecting "Boot from next volume", however !WATCH OUT!, under Debian, you must change your boot order in the BIOS to access Windows.
 
 Released under GNU General Public License v3.0. You are free to do whatever you like with the source except distribute a closed source version.
 
