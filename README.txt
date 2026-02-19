@@ -10,7 +10,7 @@ You may have to disable Secure Boot in the BIOS depending on your computer.
 
 To create a persistent installation after installing the live image, you must click on the install Linux Mint icon on the desktop from within the live partition Linux Mint OS. Once the partitioning screen comes up you must create a swap area (recommended at least 8 GB at the end of the free space), and an ext4 file system in the rest of the free space at /
 
-Currently the installer supports the installation of Linux Mint 22.3 Cinnamon and Ubuntu 24.04.4 LTS. You may also use your own .iso files, but Debian and Fedora based distros don't work for now. Linux Mint Debian Edition is an exception.
+Currently the installer supports the installation of Linux Mint 22.3 Cinnamon, Ubuntu 24.04.4 LTS, and Debian Live 13.3.0 KDE. You may also use your own .iso files, but Debian and Fedora based distros don't work for now. Linux Mint Debian Edition is an exception.
 
 wli sets Linux as the default boot entry automatically.
 
