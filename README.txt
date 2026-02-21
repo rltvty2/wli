@@ -2,7 +2,7 @@ Install a bootable Linux partition to your hard drive from within Windows withou
 
 WARNING: This software is in alpha, and is not recommended for use on your main/critical PC.
 
-You must download wli_v09014.bat and wli_v09014.ps1, right click on the .bat, and then run the program as administrator.
+For Windows you must download wli_v09014.bat and wli_v09014.ps1, right click on the .bat, and then run the program as administrator.
 
 You may have to disable bitlocker/decrypt your hard drive to use this software.
 
