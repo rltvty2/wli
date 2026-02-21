@@ -61,14 +61,7 @@ sudo dnf install python3 python3-gobject gtk3 \
 
 ```bash
 # The installer needs root to create partitions / mount filesystems
-sudo python3 linux_installer.py
-```
-
-Or use the provided launcher:
-
-```bash
-chmod +x run_installer.sh
-./run_installer.sh
+sudo python3 ulli_v09014.py
 ```
 
 ---
