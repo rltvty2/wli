@@ -81,7 +81,5 @@ sudo python3 ulli_v09014.py
 - SHA-256 checksums are verified for all official ISOs.
 - The **Delete ISO after installation** checkbox removes the cache file
   once copying is complete.
-- A `Linux_Installer_Instructions.txt` file is written to your Desktop
-  with manual boot instructions in case automatic GRUB configuration fails.
 - Fedora's hybrid ISO is extracted with `7z`; all boot config `LABEL=`
   references are patched to match the `LINUX_LIVE` FAT32 volume label.
