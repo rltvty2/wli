@@ -14,7 +14,7 @@ Currently the installer supports the installation of Linux Mint 22.3 Cinnamon, U
 
 wli sets Linux as the default boot entry automatically.
 
-Under Linux Mint and Ubuntu Windows can be accessed upon booting by selecting "Boot from next volume", however !WATCH OUT!, under Debian, you must change your boot order in the BIOS to access Windows.
+Under Linux Mint and Ubuntu Windows can be accessed upon booting by selecting "Boot from next volume", however !WATCH OUT!, under Debian and Fedora, you must change your boot order in the BIOS to access Windows.
 
 Released under GNU General Public License v3.0. You are free to do whatever you like with the source except distribute a closed source version.
 
