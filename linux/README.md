@@ -14,8 +14,6 @@ Supports:
 
 ---
 
-## Two filesystem strategies
-
 ### btrfs  →  Shrink + new partition
 If your root filesystem is **btrfs**, the installer:
 1. Shrinks the btrfs filesystem online (no unmount needed).
@@ -26,18 +24,6 @@ If your root filesystem is **btrfs**, the installer:
 4. On reboot you boot the live environment from the FAT32 partition and
    run the distro's installer, which will automatically find the
    unformatted partition.
-
-### ext4 / xfs / ext3  →  Loopback image (Wubi-style)
-If your root filesystem is **ext4** (or ext3/xfs), no repartitioning
-happens at all.  Instead the installer:
-1. Creates a large **sparse image file** (`/var/lib/linux-installer/<distro>_root.img`).
-2. Formats it ext4 and extracts the live squashfs rootfs into it.
-3. Adds a GRUB 2 menu entry using `loopback` that boots from the image.
-
-The new distro runs entirely inside the image file.  Because the image is
-sparse, it only occupies as much real disk space as data is actually
-written to it.  You can later migrate to a real partition using standard
-`rsync` + `grub-install`.
 
 ---
 
