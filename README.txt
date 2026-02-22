@@ -2,7 +2,7 @@ Install a bootable Linux partition to your hard drive from within Windows withou
 
 WARNING: This software is in alpha, and is not recommended for use on your main/critical PC.
 
-For Linux you must download ulli_v090141.py, then in the terminal run the following code: 
+For Linux you must download ulli_v090142.py, then in the terminal run the following code: 
 
 sudo python3 ulli_v090142.py
 
