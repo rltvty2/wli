@@ -4,7 +4,7 @@ WARNING: This software is in alpha, and is not recommended for use on your main/
 
 For Linux you must download ulli_v090141.py, then in the terminal run the following code: 
 
-sudo python3 ulli_v090141.py
+sudo python3 ulli_v090142.py
 
 For Windows you must download wli_v09014.bat and wli_v09014.ps1, right click on the .bat, and then run the program as administrator.
 
