@@ -1,4 +1,4 @@
-Install a bootable Linux partition to your hard drive from within Windows without a USB stick or manual BIOS configuration.
+Install a bootable Linux partition to your hard drive without a USB stick or manual BIOS configuration.
 
 WARNING: This software is in alpha, and is not recommended for use on your main/critical PC.
 
