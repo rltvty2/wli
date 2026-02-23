@@ -16,7 +16,7 @@ To create a persistent installation after installing the live image, you must cl
 
 Currently the installer supports the installation of Linux Mint 22.3 Cinnamon, Ubuntu 24.04.4 LTS, Kubuntu 24.04.4 LTS, Debian Live 13.3.0 KDE, and Fedora 43 - KDE Plasma Desktop. You may also use your own .iso files, but Debian and Fedora based distros don't work for now. Linux Mint Debian Edition is an exception.
 
-wli sets Linux as the default boot entry automatically.
+ulli sets Linux as the default boot entry automatically.
 
 Under Linux Mint, Ubuntu, and Kubuntu, Windows can be accessed upon booting by selecting "Boot from next volume", however !WATCH OUT!, under Debian and Fedora, you must change your boot order in the BIOS to access Windows.
 
