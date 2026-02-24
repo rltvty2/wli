@@ -47,7 +47,7 @@ sudo dnf install python3 python3-gobject gtk3 \
 
 ```bash
 # The installer needs root to create partitions / mount filesystems
-sudo python3 ulli_v090143.py
+sudo python3 ulli_v090144.py
 ```
 
 ---
