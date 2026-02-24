@@ -1,6 +1,6 @@
 Install a bootable Linux partition to your hard drive without a USB stick or manual BIOS configuration.
 
-WARNING: This software is in alpha, and is not recommended for use on your main/critical PC.
+WARNING: THIS SOFTWARE IS IN ALPHA AND IS NOT RECOMMENDED FOR USE ON YOUR MAIN/CRITICAL PC. THIS SOFTWARE IS PROVIDED AS-IS. THE AUTHOR ACCEPTS NO LIABILITY FOR DAMAGES OR DATA LOSS CAUSED BY THIS SOFTWARE. BACK UP YOUR DATA BEFORE USE. USE AT YOUR OWN RISK.
 
 For Linux you must download ulli_v090143.py, then in the terminal run the following code: 
 
