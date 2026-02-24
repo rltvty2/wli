@@ -12,7 +12,9 @@ You may have to disable bitlocker/decrypt your hard drive to use this software.
 
 You may have to disable Secure Boot in the BIOS depending on your computer.
 
-To create a persistent installation after installing the live image, you must click on the install Linux Mint icon on the desktop from within the live partition Linux Mint OS. Once the partitioning screen comes up you must create a swap area (recommended at least 8 GB at the end of the free space), and an ext4 file system in the rest of the free space at /
+To create a persistent Kubuntu installation after creating the live partition, run the installer, and then when the partitioning option comes up choose replace partition and choose the free space created by the linux installer.
+
+To create a persistent Linux Mint installation after installing the live image, you must click on the install Linux Mint icon on the desktop from within the live partition Linux Mint OS. Once the partitioning screen comes up you must create a swap area (recommended at least 8 GB at the end of the free space), and a btrfs file system in the rest of the free space at /. I recommend btrfs as opposed to ext4, because if you ever want to install another distro using this software, only btrfs supports reszing the mounted partition.
 
 Currently the installer supports the installation of Linux Mint 22.3 Cinnamon, Ubuntu 24.04.4 LTS, Kubuntu 24.04.4 LTS, Debian Live 13.3.0 KDE, and Fedora 43 - KDE Plasma Desktop. You may also use your own .iso files, but Debian and Fedora based distros don't work for now. Linux Mint Debian Edition is an exception.
 
