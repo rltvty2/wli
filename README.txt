@@ -12,13 +12,13 @@ You may have to disable bitlocker/decrypt your hard drive to use this software.
 
 You may have to disable Secure Boot in the BIOS depending on your computer.
 
+Currently the installer supports the installation of Linux Mint 22.3 Cinnamon, Ubuntu 24.04.4 LTS, Kubuntu 24.04.4 LTS, Debian Live 13.3.0 KDE, and Fedora 43 - KDE Plasma Desktop. You may also use your own .iso files, but Debian and Fedora based distros don't work for now. Linux Mint Debian Edition is an exception.
+
+ulli attempts to set Linux as the default boot entry automatically, but this doesn't work on all systems. You may have to select Linux as the default boot option in the BIOS. The BIOS is accessible during startup by pressing F2, DEL, F10, ESC, F1, F12, or F11. Refer to your PC or motherboard's documentation for more information.
+
 To create a persistent Kubuntu installation after creating the live partition, run the installer, and then when the partitioning option comes up choose replace partition and choose the free space created by the linux installer.
 
 To create a persistent Linux Mint installation after installing the live image, you must click on the install Linux Mint icon on the desktop from within the live partition Linux Mint OS. Once the partitioning screen comes up you must create a swap area (equal to your RAM size. If disk space is limited, 8 GB is the minimum recommended.), and a btrfs file system in the rest of the free space at /. I recommend btrfs as opposed to ext4, because if you ever want to install another distro using this software, only btrfs supports reszing the mounted partition.
-
-Currently the installer supports the installation of Linux Mint 22.3 Cinnamon, Ubuntu 24.04.4 LTS, Kubuntu 24.04.4 LTS, Debian Live 13.3.0 KDE, and Fedora 43 - KDE Plasma Desktop. You may also use your own .iso files, but Debian and Fedora based distros don't work for now. Linux Mint Debian Edition is an exception.
-
-ulli sets Linux as the default boot entry automatically.
 
 Under Linux Mint, Ubuntu, and Kubuntu, Windows can be accessed upon booting by selecting "Boot from next volume", however !WATCH OUT!, under Debian and Fedora, you must change your boot order in the BIOS to access Windows.
 
