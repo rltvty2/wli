@@ -6,7 +6,7 @@ For Linux you must download ulli_v090143.py, then in the terminal run the follow
 
 sudo python3 ulli_v090143.py
 
-For Windows you must download ulli_v09014.bat and ulli_v09014.ps1, right click on the .bat, and then run the program as administrator.
+For Windows you must download ulli-windows-v090143.zip, right click on the .bat, and then run the program as administrator.
 
 You may have to disable bitlocker/decrypt your hard drive to use this software.
 
