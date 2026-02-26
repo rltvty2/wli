@@ -22,7 +22,7 @@ sudo python3 ulli-linux.py
 
 ## Running under Windows
 
-Download `ulli-windows.zip`, right click on `run-ulli-windows.bat`, and then run the program as administrator.
+Download `ulli-windows.zip`, extract all files, right click on `run-ulli-windows.bat`, and then run the program as administrator.
 
 Alternatively you can turn off smart app control under windows security, and then simply double click on `run-ulli-windows.bat` to run the program.
 
