@@ -933,7 +933,7 @@ function Show-DiskPlan {
             }
             
             # Always offer wipe & reformat for non-C: disks if disk is large enough
-            $wipeMinGB = 0.5 + $bootPartSizeGB + 1  # ESP + boot + at least 1 GB remaining
+            $wipeMinGB = $bootPartSizeGB + 1  # boot + at least 1 GB remaining
             $diskSizeOK = ($selDisk.TotalGB -ge $wipeMinGB)
             $radioWipe.Text = [char]0x26A0 + " Wipe & reformat entire disk ($($selDisk.TotalGB) GB) - ALL DATA ON DISK $selDiskNum WILL BE DESTROYED"
             $radioWipe.Visible = $true
@@ -1009,19 +1009,16 @@ function Show-DiskPlan {
             $afterLines = @()
             
             if ($usingWipe) {
-                $espGB = 0.5
-                $usableGB = [math]::Round($selDisk.TotalGB - $espGB - $bootPartSizeGB, 1)
+                $usableGB = [math]::Round($selDisk.TotalGB - $bootPartSizeGB, 1)
                 
                 $changeLines += "  ** WARNING: This will ERASE ALL DATA on this disk! **"
                 $changeLines += ""
                 $changeLines += "  1. C: partition is NOT modified (different disk)"
                 $changeLines += "  2. Wipe Disk $selDiskNum and create a new GPT partition table"
-                $changeLines += "  3. Create 512 MB EFI System Partition (ESP)"
-                $changeLines += "  4. Create $bootPartSizeGB GB FAT32 boot partition (LINUX_LIVE)"
-                $changeLines += "  5. Leave ~$usableGB GB unallocated for Linux installation"
-                $changeLines += "  6. Configure UEFI boot entry for $DistroName"
+                $changeLines += "  3. Create $bootPartSizeGB GB FAT32 boot partition (LINUX_LIVE)"
+                $changeLines += "  4. Leave ~$usableGB GB unallocated for Linux installation"
+                $changeLines += "  5. Install bootloader to Windows ESP and configure UEFI boot entry for $DistroName"
                 
-                $afterLines += "  EFI System (ESP)       0.5 GB  <-- UEFI boot files"
                 $afterLines += "  LINUX_LIVE (FAT32)     $bootPartSizeGB GB  <-- $DistroName live boot"
                 $afterLines += "  [Unallocated - Linux]  ~$usableGB GB  <-- for Linux installer"
             } elseif ($usingShrink) {
@@ -1192,7 +1189,7 @@ function Show-DiskPlan {
                     return
                 }
             } elseif ($strat -eq "other_drive" -and -not ($selDisk.FreeGB -ge ($bootPartSizeGB + 1))) {
-                # No free space and couldn't shrink — shouldn't be confirmable
+                # No free space and couldn't shrink -- shouldn't be confirmable
                 [System.Windows.Forms.MessageBox]::Show(
                     "Disk $($selDisk.Number) cannot be used as-is.`n`n" +
                     "It has no unallocated space and no NTFS partitions that can be shrunk.`n" +
@@ -1705,7 +1702,7 @@ function Start-Installation {
         # ── Wipe-disk strategy (secondary drives only) ──────────────────────
         if ($selectedStrategy -eq "wipe_disk") {
             Log-Message ""
-            Log-Message "━━ Strategy: wipe & reformat entire disk ━━"
+            Log-Message "== Strategy: wipe & reformat entire disk =="
             Log-Message "Target disk: Disk $targetDiskNumber"
             
             # Safety: refuse to wipe the disk containing Windows
@@ -1761,30 +1758,11 @@ exit
             
             Start-Sleep -Seconds 2
             
-            # Create ESP (512 MB)
-            Log-Message "Creating 512 MB EFI System Partition..."
-            Set-Status "Creating EFI System Partition..."
-            try {
-                $espPartition = New-Partition -DiskNumber $targetDiskNumber `
-                    -Size 512MB `
-                    -GptType "{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}" `
-                    -ErrorAction Stop
-                
-                Start-Sleep -Seconds 2
-                Format-Volume -Partition $espPartition `
-                    -FileSystem FAT32 `
-                    -NewFileSystemLabel "ESP" `
-                    -Confirm:$false `
-                    -ErrorAction Stop
-                
-                Log-Message "ESP created and formatted (Partition $($espPartition.PartitionNumber))."
-            }
-            catch {
-                Log-Message "Failed to create ESP: $_" -Error
-                return
-            }
-            
-            Start-Sleep -Seconds 2
+            # NOTE: We do NOT create an ESP on the secondary drive. Instead we
+            # install the bootloader into the existing Windows ESP later, which
+            # the firmware already trusts and has in its boot order. This avoids
+            # the problem of firmware not discovering a brand-new ESP on an
+            # unknown disk.
             
             # Create boot partition (7 GB)
             Log-Message "Creating $($script:MinPartitionSizeGB) GB boot partition..."
@@ -1834,8 +1812,7 @@ exit
             
             Log-Message ""
             Log-Message "Disk $targetDiskNumber wiped and reformatted successfully:"
-            Log-Message "  Partition 1: ESP (512 MB)"
-            Log-Message "  Partition 2: LINUX_LIVE ($($script:MinPartitionSizeGB) GB, ${driveLetter}:)"
+            Log-Message "  Partition 1: LINUX_LIVE ($($script:MinPartitionSizeGB) GB, ${driveLetter}:)"
             Log-Message "  Unallocated: ~$unallocGB GB (for Linux installer)"
             Log-Message ""
         }
@@ -1930,7 +1907,7 @@ exit
             }
         }
         
-        # Create boot partition (skip for wipe_disk — already created above)
+        # Create boot partition (skip for wipe_disk -- already created above)
         if ($selectedStrategy -ne "wipe_disk") {
         Set-Status "Creating boot partition..."
         Log-Message "Creating $script:MinPartitionSizeGB GB boot partition on Disk $targetDiskNumber..."
@@ -2381,7 +2358,16 @@ exit
             Log-Message "Files copied successfully!"
             
             Log-Message "Removing read-only attributes..."
-            attrib -R ($script:NewDrive + "\*.*") /S /D
+            Set-Status "Removing read-only attributes..."
+            try {
+                Get-ChildItem -Path $script:NewDrive -Recurse -Force -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Attributes -band [System.IO.FileAttributes]::ReadOnly } |
+                    ForEach-Object {
+                        $_.Attributes = $_.Attributes -band (-bnot [System.IO.FileAttributes]::ReadOnly)
+                    }
+            } catch {
+                Log-Message "Warning: Could not remove all read-only attributes: $_" -Error
+            }
         }
         catch {
             Log-Message "Error during file copy: $_" -Error
@@ -2459,6 +2445,139 @@ exit
             New-Item -Path $efiPath -ItemType Directory -Force
         }
         
+        # For wipe_disk on a secondary drive: install the bootloader into the
+        # Windows ESP so the firmware (which already knows the Windows ESP) can
+        # boot it.  We copy the distro's full EFI boot directory (including GRUB
+        # modules) and patch label references to match our LINUX_LIVE partition.
+        $script:WipeBootInstalled = $false
+        if ($selectedStrategy -eq "wipe_disk") {
+            try {
+                Log-Message "Installing bootloader into Windows ESP..."
+                Set-Status "Installing bootloader into Windows ESP..."
+                
+                # Find the Windows ESP
+                $winEspPart = Get-Partition -DiskNumber $script:CDriveInfo.DiskNumber |
+                    Where-Object { $_.GptType -eq '{c12a7328-f81f-11d2-ba4b-00a0c93ec93b}' } |
+                    Select-Object -First 1
+                
+                if (-not $winEspPart) {
+                    throw "Could not find Windows EFI System Partition"
+                }
+                
+                # Mount the Windows ESP
+                $winEspLetter = $winEspPart.DriveLetter
+                $removeLetter = $false
+                if (-not $winEspLetter) {
+                    $winEspPart | Add-PartitionAccessPath -AssignDriveLetter -ErrorAction Stop
+                    Start-Sleep -Seconds 2
+                    $winEspPart = Get-Partition -DiskNumber $winEspPart.DiskNumber -PartitionNumber $winEspPart.PartitionNumber
+                    $winEspLetter = $winEspPart.DriveLetter
+                    $removeLetter = $true
+                }
+                
+                if (-not $winEspLetter) {
+                    throw "Could not assign drive letter to Windows ESP"
+                }
+                
+                $winEspDrive = "${winEspLetter}:"
+                Log-Message "Windows ESP mounted at $winEspDrive"
+                
+                # Create distro directory in Windows ESP
+                $safeName = ($distroName -replace '[^a-zA-Z0-9]', '').Trim()
+                if (-not $safeName) { $safeName = "Linux" }
+                $script:WipeEspDistroDir = "\EFI\$safeName"
+                $distroEspDir = "$winEspDrive$($script:WipeEspDistroDir)"
+                New-Item -Path $distroEspDir -ItemType Directory -Force | Out-Null
+                
+                # Copy the FULL \EFI\BOOT directory tree (includes GRUB modules,
+                # configs, shim, fonts, etc.) -- not just .efi files.
+                $sourceEfi = $script:NewDrive + "\EFI\BOOT"
+                if (Test-Path $sourceEfi) {
+                    robocopy $sourceEfi $distroEspDir /E /R:2 /W:2 /NP /NFL /NDL | Out-Null
+                    Log-Message "EFI\BOOT directory copied to $distroEspDir"
+                } else {
+                    throw "No EFI\BOOT directory found on $($script:NewDrive)"
+                }
+                
+                # Also copy GRUB module directories if they exist on LINUX_LIVE.
+                # These contain .mod files that GRUB needs for insmod commands.
+                foreach ($grubDir in @("boot\grub", "boot\grub2")) {
+                    $srcGrub = Join-Path $script:NewDrive $grubDir
+                    if (Test-Path $srcGrub) {
+                        $dstGrub = Join-Path $distroEspDir $grubDir
+                        New-Item -Path $dstGrub -ItemType Directory -Force | Out-Null
+                        robocopy $srcGrub $dstGrub /E /R:2 /W:2 /NP /NFL /NDL | Out-Null
+                        Log-Message "Copied $grubDir to ESP"
+                    }
+                }
+                
+                # Patch ALL grub/boot config files in the ESP copy to use our
+                # LINUX_LIVE label instead of the original ISO label.
+                $liveLabel = $script:VolumeLabel
+                Log-Message "Patching boot configs in ESP to use label '$liveLabel'..."
+                
+                $cfgFiles = Get-ChildItem -Path $distroEspDir -Recurse -Include "*.cfg","*.conf" -ErrorAction SilentlyContinue
+                $patchedCount = 0
+                foreach ($cfgFile in $cfgFiles) {
+                    try {
+                        $content = Get-Content $cfgFile.FullName -Raw -ErrorAction Stop
+                        $original = $content
+                        
+                        # Generic label patterns used across distros:
+                        # search --label 'Something'  or  search -l 'Something'
+                        $content = $content -replace "(search\s+[^`n]*(?:--label|-l)\s+')[^']+(')", "`$1$liveLabel`$2"
+                        $content = $content -replace '(search\s+[^\n]*(?:--label|-l)\s+")([^"]+)(")', "`$1$liveLabel`$3"
+                        $content = $content -replace "(search\s+[^`n]*(?:--label|-l)\s+)(\S+)(\s)", "`$1$liveLabel`$3"
+                        
+                        # Fedora-specific patterns
+                        $content = $content -replace '(root=live:(?:CD)?LABEL=)([^\s\\]+)', "`$1$liveLabel"
+                        $content = $content -replace '(set isolabel=)([^\s]+)', "`$1$liveLabel"
+                        $content = $content -replace '(CDLABEL=)([^\s\\]+)', "`$1$liveLabel"
+                        
+                        # Ubuntu/Mint/Debian: LABEL= in kernel command line
+                        $content = $content -replace '(LABEL=)([^\s\\]+)', "`$1$liveLabel"
+                        
+                        if ($content -ne $original) {
+                            Set-Content -Path $cfgFile.FullName -Value $content -Encoding UTF8 -Force
+                            $patchedCount++
+                        }
+                    } catch {
+                        Log-Message "  Warning: Could not patch $($cfgFile.Name): $_" -Error
+                    }
+                }
+                Log-Message "Patched $patchedCount config file(s) in ESP"
+                
+                # Determine the right EFI binary to point bcdedit at
+                # Prefer shimx64.efi (Secure Boot), then grubx64.efi, then BOOTx64.EFI
+                $script:WipeEfiName = "BOOTx64.EFI"
+                foreach ($candidate in @("shimx64.efi", "grubx64.efi")) {
+                    if (Test-Path "$distroEspDir\$candidate") {
+                        $script:WipeEfiName = $candidate
+                        break
+                    }
+                }
+                Log-Message "Boot binary: $($script:WipeEfiName)"
+                
+                $script:WipeWinEspDrive = $winEspDrive
+                $script:WipeBootInstalled = $true
+                
+                # Clean up ESP mount if we added it
+                if ($removeLetter -and $winEspLetter) {
+                    # Keep it mounted -- bcdedit will need the drive letter
+                    $script:WipeEspRemoveLetter = $true
+                    $script:WipeEspLetter = $winEspLetter
+                    $script:WipeEspPartition = $winEspPart
+                } else {
+                    $script:WipeEspRemoveLetter = $false
+                }
+                
+                Log-Message "Bootloader installed to Windows ESP at $($script:WipeEspDistroDir)"
+            } catch {
+                Log-Message "Failed to install bootloader to Windows ESP: $_" -Error
+                Log-Message "You may need to configure boot manually in UEFI/BIOS settings" -Error
+            }
+        }
+        
         if ($autoRestartCheck.Checked) {
             Log-Message "Configuring UEFI boot priority..."
             Set-Status "Configuring UEFI boot priority..."
@@ -2533,69 +2652,97 @@ exit
                 } else {
                     Log-Message "No existing boot entry found for $distroName"
                     Log-Message "Creating new UEFI firmware boot entry..."
-                    
-                    $driveLetter = $script:NewDrive.TrimEnd(':')
                     $bootCreated = $false
                     
-                    try {
-                        Log-Message "Attempting bcdedit /copy method..."
-                        $copyOutput = bcdedit /copy "{bootmgr}" /d "$distroName" 2>&1
-                        $copyOutputStr = $copyOutput -join " "
-                        
-                        if ($copyOutputStr -match '\{[0-9a-fA-F-]+\}') {
-                            $newGuid = $matches[0]
-                            Log-Message "Created new entry: $newGuid"
-                            
-                            $inheritedProps = @("default", "displayorder", "toolsdisplayorder", "timeout", "resumeobject", "inherit", "locale")
-                            foreach ($prop in $inheritedProps) {
-                                Start-Process "bcdedit.exe" -ArgumentList "/deletevalue", $newGuid, $prop -Wait -NoNewWindow -ErrorAction SilentlyContinue 2>$null | Out-Null
-                            }
-                            Log-Message "Cleaned inherited Windows Boot Manager properties"
-                            
-                            $r1 = Start-Process "bcdedit.exe" -ArgumentList "/set", $newGuid, "device", "partition=$script:NewDrive" -Wait -PassThru -NoNewWindow
-                            $r2 = Start-Process "bcdedit.exe" -ArgumentList "/set", $newGuid, "path", "\EFI\BOOT\BOOTx64.EFI" -Wait -PassThru -NoNewWindow
-                            Start-Process "bcdedit.exe" -ArgumentList "/set", $newGuid, "description", "$distroName" -Wait -NoNewWindow -ErrorAction SilentlyContinue | Out-Null
-                            $r3 = Start-Process "bcdedit.exe" -ArgumentList "/set", "{fwbootmgr}", "displayorder", $newGuid, "/addfirst" -Wait -PassThru -NoNewWindow
-                            $r4 = Start-Process "bcdedit.exe" -ArgumentList "/set", "{fwbootmgr}", "default", $newGuid -Wait -PassThru -NoNewWindow
-                            
-                            if ($r1.ExitCode -eq 0 -and $r2.ExitCode -eq 0 -and $r3.ExitCode -eq 0 -and $r4.ExitCode -eq 0) {
-                                Log-Message "UEFI boot entry created and set as default!"
-                                $bootCreated = $true
-                            } else {
-                                Log-Message "Some bcdedit commands failed (exit codes: set device=$($r1.ExitCode), set path=$($r2.ExitCode), displayorder=$($r3.ExitCode), default=$($r4.ExitCode))" -Error
-                                Start-Process "bcdedit.exe" -ArgumentList "/delete", $newGuid -Wait -NoNewWindow -ErrorAction SilentlyContinue
-                            }
-                        } else {
-                            Log-Message "bcdedit /copy did not return a GUID: $copyOutputStr"
-                        }
-                    }
-                    catch {
-                        Log-Message "bcdedit /copy method failed: $_"
-                    }
-                    
-                    if (-not $bootCreated) {
+                    if ($script:WipeBootInstalled) {
+                        # wipe_disk path: bootloader is in the Windows ESP at
+                        # \EFI\<distro>\<efiname>.  bcdedit entry points to the
+                        # Windows ESP partition (which firmware already trusts).
                         try {
-                            Log-Message "Attempting bcdedit /create method..."
-                            $createOutput = bcdedit /create /d "$distroName" /application BOOTSECTOR 2>&1
-                            $createOutputStr = $createOutput -join " "
+                            Log-Message "Creating firmware boot entry (Windows ESP)..."
                             
-                            if ($createOutputStr -match '\{[0-9a-fA-F-]+\}') {
+                            $copyOutput = bcdedit /copy "{bootmgr}" /d "$distroName" 2>&1
+                            $copyOutputStr = $copyOutput -join " "
+                            
+                            if ($copyOutputStr -match '\{[0-9a-fA-F-]+\}') {
                                 $newGuid = $matches[0]
-                                Log-Message "Created entry: $newGuid"
+                                Log-Message "Created new entry: $newGuid"
                                 
-                                Start-Process "bcdedit.exe" -ArgumentList "/set", $newGuid, "device", "partition=$script:NewDrive" -Wait -PassThru -NoNewWindow
-                                Start-Process "bcdedit.exe" -ArgumentList "/set", $newGuid, "path", "\EFI\BOOT\BOOTx64.EFI" -Wait -PassThru -NoNewWindow
-                                Start-Process "bcdedit.exe" -ArgumentList "/set", "{fwbootmgr}", "displayorder", $newGuid, "/addfirst" -Wait -PassThru -NoNewWindow
-                                Start-Process "bcdedit.exe" -ArgumentList "/set", "{fwbootmgr}", "default", $newGuid -Wait -PassThru -NoNewWindow
+                                $inheritedProps = @("default", "displayorder", "toolsdisplayorder", "timeout", "resumeobject", "inherit", "locale")
+                                foreach ($prop in $inheritedProps) {
+                                    Start-Process "bcdedit.exe" -ArgumentList "/deletevalue", $newGuid, $prop -Wait -NoNewWindow -ErrorAction SilentlyContinue 2>$null | Out-Null
+                                }
                                 
-                                Log-Message "UEFI boot entry created via /create method"
-                                $bootCreated = $true
+                                # Point to Windows ESP + distro-specific path
+                                $efiPath = "$($script:WipeEspDistroDir)\$($script:WipeEfiName)"
+                                Log-Message "Setting device=partition=$($script:WipeWinEspDrive) path=$efiPath"
+                                
+                                $r1 = Start-Process "bcdedit.exe" -ArgumentList "/set", $newGuid, "device", "partition=$($script:WipeWinEspDrive)" -Wait -PassThru -NoNewWindow
+                                $r2 = Start-Process "bcdedit.exe" -ArgumentList "/set", $newGuid, "path", $efiPath -Wait -PassThru -NoNewWindow
+                                Start-Process "bcdedit.exe" -ArgumentList "/set", $newGuid, "description", "$distroName" -Wait -NoNewWindow -ErrorAction SilentlyContinue | Out-Null
+                                $r3 = Start-Process "bcdedit.exe" -ArgumentList "/set", "{fwbootmgr}", "displayorder", $newGuid, "/addfirst" -Wait -PassThru -NoNewWindow
+                                $r4 = Start-Process "bcdedit.exe" -ArgumentList "/set", "{fwbootmgr}", "default", $newGuid -Wait -PassThru -NoNewWindow
+                                
+                                if ($r1.ExitCode -eq 0 -and $r2.ExitCode -eq 0 -and $r3.ExitCode -eq 0 -and $r4.ExitCode -eq 0) {
+                                    Log-Message "UEFI boot entry created and set as default!"
+                                    $bootCreated = $true
+                                } else {
+                                    Log-Message "Some bcdedit commands failed (exit codes: device=$($r1.ExitCode), path=$($r2.ExitCode), displayorder=$($r3.ExitCode), default=$($r4.ExitCode))" -Error
+                                    Start-Process "bcdedit.exe" -ArgumentList "/delete", $newGuid -Wait -NoNewWindow -ErrorAction SilentlyContinue
+                                }
                             } else {
-                                Log-Message "bcdedit /create did not return a GUID: $createOutputStr"
+                                Log-Message "bcdedit /copy did not return a GUID: $copyOutputStr" -Error
+                            }
+                            
+                            # Clean up ESP drive letter if we assigned it
+                            if ($script:WipeEspRemoveLetter -and $script:WipeEspLetter) {
+                                $script:WipeEspPartition | Remove-PartitionAccessPath -AccessPath "$($script:WipeEspLetter):\" -ErrorAction SilentlyContinue
                             }
                         }
                         catch {
-                            Log-Message "bcdedit /create method failed: $_"
+                            Log-Message "Failed to create boot entry: $_" -Error
+                        }
+                    } else {
+                        # Non-wipe path on same disk as Windows: bcdedit /copy from
+                        # {bootmgr} can work here because the firmware already knows
+                        # this disk and its ESP.
+                        $bootDeviceDrive = $script:NewDrive
+                        Log-Message "Boot entry will point to partition: $bootDeviceDrive"
+                    
+                        try {
+                            Log-Message "Attempting bcdedit /copy method..."
+                            $copyOutput = bcdedit /copy "{bootmgr}" /d "$distroName" 2>&1
+                            $copyOutputStr = $copyOutput -join " "
+                            
+                            if ($copyOutputStr -match '\{[0-9a-fA-F-]+\}') {
+                                $newGuid = $matches[0]
+                                Log-Message "Created new entry: $newGuid"
+                                
+                                $inheritedProps = @("default", "displayorder", "toolsdisplayorder", "timeout", "resumeobject", "inherit", "locale")
+                                foreach ($prop in $inheritedProps) {
+                                    Start-Process "bcdedit.exe" -ArgumentList "/deletevalue", $newGuid, $prop -Wait -NoNewWindow -ErrorAction SilentlyContinue 2>$null | Out-Null
+                                }
+                                Log-Message "Cleaned inherited Windows Boot Manager properties"
+                                
+                                $r1 = Start-Process "bcdedit.exe" -ArgumentList "/set", $newGuid, "device", "partition=$bootDeviceDrive" -Wait -PassThru -NoNewWindow
+                                $r2 = Start-Process "bcdedit.exe" -ArgumentList "/set", $newGuid, "path", "\EFI\BOOT\BOOTx64.EFI" -Wait -PassThru -NoNewWindow
+                                Start-Process "bcdedit.exe" -ArgumentList "/set", $newGuid, "description", "$distroName" -Wait -NoNewWindow -ErrorAction SilentlyContinue | Out-Null
+                                $r3 = Start-Process "bcdedit.exe" -ArgumentList "/set", "{fwbootmgr}", "displayorder", $newGuid, "/addfirst" -Wait -PassThru -NoNewWindow
+                                $r4 = Start-Process "bcdedit.exe" -ArgumentList "/set", "{fwbootmgr}", "default", $newGuid -Wait -PassThru -NoNewWindow
+                                
+                                if ($r1.ExitCode -eq 0 -and $r2.ExitCode -eq 0 -and $r3.ExitCode -eq 0 -and $r4.ExitCode -eq 0) {
+                                    Log-Message "UEFI boot entry created and set as default!"
+                                    $bootCreated = $true
+                                } else {
+                                    Log-Message "Some bcdedit commands failed (exit codes: set device=$($r1.ExitCode), set path=$($r2.ExitCode), displayorder=$($r3.ExitCode), default=$($r4.ExitCode))" -Error
+                                    Start-Process "bcdedit.exe" -ArgumentList "/delete", $newGuid -Wait -NoNewWindow -ErrorAction SilentlyContinue
+                                }
+                            } else {
+                                Log-Message "bcdedit /copy did not return a GUID: $copyOutputStr"
+                            }
+                        }
+                        catch {
+                            Log-Message "bcdedit /copy method failed: $_"
                         }
                     }
                     
