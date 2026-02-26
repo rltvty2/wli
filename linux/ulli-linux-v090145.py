@@ -102,8 +102,13 @@ def run(cmd, **kw):
     return r.returncode, out, err
 
 def run_root(cmd, **kw):
-    """Run a command with pkexec (GUI sudo)."""
-    return run(["pkexec", "--disable-internal-agent"] + cmd, **kw)
+    """Run a command as root.
+
+    Since the application re-launches itself with root privileges at
+    startup (via ensure_root), this is equivalent to run().  Kept for
+    clarity and backwards-compatibility.
+    """
+    return run(cmd, **kw)
 
 def get_root_fs_info():
     """Return dict with device, fstype, mountpoint for /."""
@@ -2538,6 +2543,49 @@ def check_deps():
     return missing
 
 
+def ensure_root():
+    """Re-launch the script as root via pkexec if not already elevated.
+
+    pkexec provides a graphical (Polkit) password dialog, which fits
+    naturally into the GTK workflow.  The current process is replaced
+    seamlessly — from the user's perspective the app simply asks for
+    their password and continues.
+
+    Environment variables DISPLAY and XAUTHORITY (or WAYLAND_DISPLAY)
+    are forwarded so the GTK window can still open under the user's
+    desktop session.
+    """
+    if os.geteuid() == 0:
+        return  # already root
+
+    # Build the command: pkexec env <display‑vars> python3 this_script.py <args>
+    # pkexec sanitises the environment, so we must explicitly pass
+    # the display variables needed for the GUI to work.
+    env_vars = []
+    for var in ("DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY",
+                "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS"):
+        val = os.environ.get(var)
+        if val:
+            env_vars.append(f"{var}={val}")
+
+    cmd = ["pkexec", "env"] + env_vars + [sys.executable] + sys.argv
+
+    try:
+        os.execvp("pkexec", cmd)
+    except Exception as e:
+        # If pkexec is missing or the user cancels, fall back to sudo
+        print(f"pkexec failed ({e}), trying sudo…")
+        cmd_sudo = ["sudo", "--preserve-env=DISPLAY,XAUTHORITY,WAYLAND_DISPLAY,"
+                    "XDG_RUNTIME_DIR,DBUS_SESSION_BUS_ADDRESS",
+                    sys.executable] + sys.argv
+        try:
+            os.execvp("sudo", cmd_sudo)
+        except Exception as e2:
+            print(f"Could not obtain root privileges: {e2}", file=sys.stderr)
+            print("Please re-run with:  sudo python3 " + " ".join(sys.argv))
+            sys.exit(1)
+
+
 if __name__ == "__main__":
     if "--check-deps" in sys.argv:
         m = check_deps()
@@ -2550,6 +2598,8 @@ if __name__ == "__main__":
         else:
             print("All dependencies satisfied.")
         sys.exit(0)
+
+    ensure_root()
 
     app = InstallerApp()
     signal.signal(signal.SIGINT, signal.SIG_DFL)
