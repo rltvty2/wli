@@ -3,8 +3,26 @@
 # Run as Administrator: powershell -ExecutionPolicy Bypass -File linux_installer.ps1
 # Distributions: Linux Mint 22.3 "Zena" (Cinnamon Edition), Ubuntu 24.04.4 LTS, Kubuntu 24.04.4 LTS, Debian Live 13.3.0 KDE, Fedora 43 KDE
 
-#Requires -RunAsAdministrator
 #Requires -Version 5.1
+
+# ─── Auto-elevate to Administrator ────────────────────────────────────────────
+# If not running as admin, re-launch this script elevated via UAC prompt.
+# The user sees the standard "Do you want to allow this app to make changes?"
+# dialog, clicks Yes, and the script continues seamlessly in a new window.
+if (-not ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()
+    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    try {
+        Start-Process powershell.exe -ArgumentList @(
+            "-ExecutionPolicy", "Bypass",
+            "-File", "`"$PSCommandPath`""
+        ) -Verb RunAs
+    } catch {
+        Write-Host "ERROR: Administrator privileges are required to run ULLI." -ForegroundColor Red
+        Write-Host "Please right-click the script and select 'Run as Administrator'."
+        Read-Host "Press Enter to exit"
+    }
+    exit
+}
 
 # Add required assemblies
 Add-Type -AssemblyName System.Windows.Forms
@@ -1730,61 +1748,85 @@ exit
                 }
             }
             
-            $partitionsAfterAnchor = $partitions | Where-Object { $_.Offset -ge $anchorEnd }
+            # ── Scan ALL unallocated gaps on the disk ────────────────────────
+            # Instead of only looking at space immediately after the anchor,
+            # enumerate every gap between (and after) partitions, then pick
+            # the best one that is large enough for the boot partition.
+            $gaps = @()
+            $sortedParts = $partitions | Sort-Object Offset
+            $prevEnd = [int64]0
             
-            if ($partitionsAfterAnchor) {
-                Log-Message "Found $($partitionsAfterAnchor.Count) partition(s) after anchor point"
-                foreach ($part in $partitionsAfterAnchor) {
-                    $sizeGB = [math]::Round($part.Size / 1GB, 2)
-                    $offsetGB = [math]::Round($part.Offset / 1GB, 2)
-                    $type = if ($part.Type -eq "Recovery") { "Recovery" } 
-                           elseif ($part.IsSystem) { "System" }
-                           elseif ($part.GptType -match "de94bba4") { "Recovery" }
-                           else { "Unknown" }
-                    Log-Message "- Partition at $offsetGB GB: $sizeGB GB ($type)"
+            foreach ($part in $sortedParts) {
+                $gapSize = $part.Offset - $prevEnd
+                if ($gapSize -gt 1MB) {
+                    $gaps += [PSCustomObject]@{
+                        Start = $prevEnd
+                        End   = $part.Offset
+                        Size  = $gapSize
+                    }
                 }
-                
-                $firstPartitionAfterAnchor = $partitionsAfterAnchor | Sort-Object Offset | Select-Object -First 1
-                $nextPartOffset = $firstPartitionAfterAnchor.Offset
-                $nextPartOffsetGB = [math]::Round($nextPartOffset / 1GB, 2)
-                
-                $availableSpace = $nextPartOffset - $anchorEnd
-                $availableSpaceGB = [math]::Round($availableSpace / 1GB, 2)
-                
-                Log-Message "Available space before next partition: $availableSpaceGB GB"
-                
-                $bootPartitionSize = [int64]($script:MinPartitionSizeGB * 1GB)
-                $alignmentSize = [int64](1MB)
-                $bufferSize = [int64](16MB)
-                $bootPartitionEndOffset = $nextPartOffset - $bufferSize
-                $bootPartitionOffset = $bootPartitionEndOffset - $bootPartitionSize
-                
-                $bootPartitionOffset = [int64]([Math]::Floor($bootPartitionOffset / $alignmentSize)) * $alignmentSize
-                
-                if ($bootPartitionOffset -lt ($anchorEnd + $alignmentSize)) {
-                    throw "Not enough space between anchor and next partition"
-                }
-                
-                $linuxSpace = $bootPartitionOffset - $anchorEnd
-                $linuxSpaceGB = [math]::Round($linuxSpace / 1GB, 2)
-                
-                Log-Message "Unallocated space starts at: $([math]::Round($anchorEnd / 1GB, 2)) GB"
-                Log-Message "Boot partition will start at: $([math]::Round($bootPartitionOffset / 1GB, 2)) GB"
-                Log-Message "Next partition starts at: $nextPartOffsetGB GB"
-                Log-Message "Linux will have $linuxSpaceGB GB of unallocated space"
-                
-            } else {
-                Log-Message "No partitions found after anchor point"
-                if ($isOtherDrive) {
-                    # On other drives, put boot partition at the end of the free space
-                    $totalFree = $disk.Size - $anchorEnd
-                    $bootPartitionSize = [int64]($script:MinPartitionSizeGB * 1GB)
-                    $bootPartitionOffset = [int64]($disk.Size - $bootPartitionSize - 16MB)
-                    $bootPartitionOffset = [int64]([Math]::Floor($bootPartitionOffset / 1MB)) * 1MB
-                } else {
-                    $bootPartitionOffset = [int64]($anchorEnd + ($linuxSizeGB * 1GB))
+                $prevEnd = $part.Offset + $part.Size
+            }
+            # Trailing space after the last partition
+            $trailingGap = $disk.Size - $prevEnd
+            if ($trailingGap -gt 1MB) {
+                $gaps += [PSCustomObject]@{
+                    Start = $prevEnd
+                    End   = $disk.Size
+                    Size  = $trailingGap
                 }
             }
+            
+            $bootPartitionSize = [int64]($script:MinPartitionSizeGB * 1GB)
+            $alignmentSize = [int64](1MB)
+            $bufferSize = [int64](16MB)
+            $minGapRequired = $bootPartitionSize + $bufferSize + $alignmentSize
+            
+            # Log all gaps found
+            Log-Message "Scanning disk for unallocated gaps..."
+            foreach ($gap in $gaps) {
+                $gapGB = [math]::Round($gap.Size / 1GB, 2)
+                $gapStartGB = [math]::Round($gap.Start / 1GB, 2)
+                Log-Message "  Gap at $gapStartGB GB: $gapGB GB"
+            }
+            
+            # Filter to gaps that are large enough for the boot partition
+            $usableGaps = $gaps | Where-Object { $_.Size -ge $minGapRequired }
+            
+            if (-not $usableGaps) {
+                throw "No unallocated gap large enough for the $script:MinPartitionSizeGB GB boot partition"
+            }
+            
+            # Prefer: (1) the gap right after the anchor if it's big enough,
+            #          (2) otherwise the largest usable gap on the disk.
+            $anchorGap = $usableGaps | Where-Object {
+                $_.Start -ge ($anchorEnd - 1MB) -and $_.Start -le ($anchorEnd + 1MB)
+            } | Select-Object -First 1
+            
+            $chosenGap = if ($anchorGap) { $anchorGap } 
+                         else { $usableGaps | Sort-Object Size -Descending | Select-Object -First 1 }
+            
+            $chosenGapGB = [math]::Round($chosenGap.Size / 1GB, 2)
+            $chosenStartGB = [math]::Round($chosenGap.Start / 1GB, 2)
+            Log-Message "Selected gap for boot partition: $chosenGapGB GB starting at $chosenStartGB GB"
+            
+            # Place the boot partition at the END of the chosen gap so the
+            # remaining space before it stays contiguous for the Linux install.
+            $bootPartitionEndOffset = $chosenGap.End - $bufferSize
+            $bootPartitionOffset = $bootPartitionEndOffset - $bootPartitionSize
+            $bootPartitionOffset = [int64]([Math]::Floor($bootPartitionOffset / $alignmentSize)) * $alignmentSize
+            
+            if ($bootPartitionOffset -lt ($chosenGap.Start + $alignmentSize)) {
+                throw "Selected gap ($chosenGapGB GB) is too small after alignment for the boot partition"
+            }
+            
+            $linuxSpace = $bootPartitionOffset - $chosenGap.Start
+            $linuxSpaceGB = [math]::Round($linuxSpace / 1GB, 2)
+            
+            Log-Message "Unallocated space starts at: $chosenStartGB GB"
+            Log-Message "Boot partition will start at: $([math]::Round($bootPartitionOffset / 1GB, 2)) GB"
+            Log-Message "Gap ends at: $([math]::Round($chosenGap.End / 1GB, 2)) GB"
+            Log-Message "Linux will have $linuxSpaceGB GB of unallocated space"
             
             Log-Message "Creating boot partition..."
             
