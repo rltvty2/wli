@@ -9,9 +9,7 @@ WARNING: THIS SOFTWARE IS IN ALPHA AND IS NOT RECOMMENDED FOR USE ON YOUR MAIN/C
 
 Running:
 
-For Linux you must download ulli-linux-v090146.py, then in the terminal run the following code: 
-
-Right click on ulli-linux-v090146.py, then click properties, and then, under the permissions tab check "Allow this file to run as a program". Then double click on the .py and click "Run in Terminal"
+For Linux you must download ulli-linux-v090146.py, right click on ulli-linux-v090146.py, click properties, and then, under the permissions tab check "Allow this file to run as a program". Then double click on the .py and click "Run in Terminal"
 
 Alternatively just run this code in your terminal, in the same folder you downloaded to:
 
