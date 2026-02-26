@@ -1,4 +1,4 @@
-Donations/tips:https://ko-fi.com/rltvty
+Donations/tips: https://ko-fi.com/rltvty
 
 Website: https://rltvty.net/installlinux.html
 
