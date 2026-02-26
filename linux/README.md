@@ -3,6 +3,18 @@
 A GUI tool to install a second Linux distro alongside your existing one —
 **no USB drive required**.
 
+## Running
+
+Right click on ulli-linux-v090146.py, then click properties, and then, under the permissions tab check "Allow this file to run as a program". Then double click on the .py and click "Run in Terminal"
+
+Alternatively just run this code in your terminal:
+
+sudo python3 ulli-linux-v090146.py
+
+
+
+---
+
 Supports:
 | Distro | Desktop |
 |---|---|
@@ -39,15 +51,6 @@ sudo apt install python3 python3-gi gir1.2-gtk-3.0 gir1.2-vte-2.91 \
 sudo dnf install python3 python3-gobject gtk3 \
                  parted btrfs-progs dosfstools e2fsprogs \
                  squashfs-tools rsync grub2-tools p7zip
-```
-
----
-
-## Running
-
-```bash
-# The installer needs root to create partitions / mount filesystems
-sudo python3 ulli_v090145.py
 ```
 
 ---
