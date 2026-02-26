@@ -1,3 +1,7 @@
+Donations/tips:https://ko-fi.com/rltvty
+
+Website: https://rltvty.net/installlinux.html
+
 Install a bootable Linux partition to your hard drive without a USB stick or manual BIOS configuration.
 
 WARNING: THIS SOFTWARE IS IN ALPHA AND IS NOT RECOMMENDED FOR USE ON YOUR MAIN/CRITICAL PC. THIS SOFTWARE IS PROVIDED AS-IS. THE AUTHOR ACCEPTS NO LIABILITY FOR DAMAGES OR DATA LOSS CAUSED BY THIS SOFTWARE. BACK UP YOUR DATA BEFORE USE. USE AT YOUR OWN RISK.
@@ -24,4 +28,4 @@ Under Linux Mint, Ubuntu, and Kubuntu, Windows can be accessed upon booting by s
 
 Released under GNU General Public License v3.0. You are free to do whatever you like with the source except distribute a closed source version.
 
-Website: https://rltvty.net/installlinux.html
+
