@@ -867,8 +867,9 @@ class InstallerWindow(Gtk.ApplicationWindow):
         warn_label = Gtk.Label(xalign=0, wrap=True)
         warn_label.set_markup(
             '<span foreground="#996600">⚠  These changes modify your disk\'s partition '
-            'table. No data should be lost, but make sure you have a backup of important '
-            'files before proceeding.</span>')
+            'table. Some options (like wipe &amp; reformat) will DESTROY ALL DATA on the '
+            'target disk. Make sure you have a backup of important files before proceeding.'
+            '</span>')
         warn_box.pack_start(warn_label, True, True, 0)
         content.pack_start(warn_box, False, False, 0)
 
@@ -905,8 +906,10 @@ class InstallerWindow(Gtk.ApplicationWindow):
         strat_box.set_margin_top(4); strat_box.set_margin_bottom(4)
         radio_primary = Gtk.RadioButton.new_with_label(None, "")
         radio_secondary = Gtk.RadioButton.new_with_label_from_widget(radio_primary, "")
+        radio_wipe = Gtk.RadioButton.new_with_label_from_widget(radio_primary, "")
         strat_box.pack_start(radio_primary, False, False, 0)
         strat_box.pack_start(radio_secondary, False, False, 0)
+        strat_box.pack_start(radio_wipe, False, False, 0)
         strat_frame.add(strat_box)
         content.pack_start(strat_frame, False, False, 0)
 
@@ -973,6 +976,7 @@ class InstallerWindow(Gtk.ApplicationWindow):
 
             if is_root_disk:
                 # Root disk strategies: shrink btrfs or use free space
+                radio_wipe.set_visible(False)
                 fstype = self.fs_info["fstype"] if self.fs_info else ""
                 can_shrink = (fstype == "btrfs")
 
@@ -1120,7 +1124,8 @@ class InstallerWindow(Gtk.ApplicationWindow):
                     radio_primary.set_label(
                         f"Use existing unallocated space ({free_gb} GB) on {sel['name']}")
                     radio_primary.set_visible(True); radio_primary.set_sensitive(True)
-                    if not radio_primary.get_active() and not radio_secondary.get_active():
+                    if not radio_primary.get_active() and not radio_secondary.get_active() \
+                            and not radio_wipe.get_active():
                         radio_primary.set_active(True)
                 else:
                     radio_primary.set_visible(False)
@@ -1132,32 +1137,87 @@ class InstallerWindow(Gtk.ApplicationWindow):
                         f"Shrink {best['dev']} ({best['fstype']}, {best['size_gb']} GB, "
                         f"{best['free_gb']} GB free) to make space")
                     radio_secondary.set_visible(True); radio_secondary.set_sensitive(True)
-                    if not has_free:
+                    if not has_free and not radio_wipe.get_active():
                         radio_secondary.set_active(True)
                 else:
                     radio_secondary.set_visible(False)
                     radio_secondary.set_active(False)
 
+                # Always offer wipe & reformat for non-root disks if disk is large enough
+                # Wipe only needs space for ESP (0.5 GB) + boot partition; the rest
+                # is left unallocated for the Linux installer to use as it sees fit.
+                wipe_min_gb = 0.5 + boot_gb + 1  # ESP + boot + at least 1 GB remaining
+                disk_size_ok = (sel["size_gb"] >= wipe_min_gb)
+                radio_wipe.set_label(
+                    f"⚠ Wipe & reformat entire disk ({sel['size_gb']} GB) – "
+                    f"ALL DATA ON {sel['name']} WILL BE DESTROYED")
+                radio_wipe.set_visible(True)
+                radio_wipe.set_sensitive(disk_size_ok)
+
                 if not has_free and not has_shrinkable:
-                    radio_primary.set_label(
-                        f"No unallocated space or shrinkable partitions on {sel['name']}")
-                    radio_primary.set_visible(True); radio_primary.set_sensitive(False)
-                    if non_shrinkable_fs:
-                        fs_list = ", ".join(
-                            f"{x['dev']} ({x['fstype']})" for x in non_shrinkable_fs)
-                        radio_secondary.set_label(
-                            f"Cannot shrink {fs_list} – only btrfs/ext4/NTFS can be resized")
-                        radio_secondary.set_visible(True); radio_secondary.set_sensitive(False)
+                    if disk_size_ok:
+                        # Wipe is the only available option
+                        radio_primary.set_label(
+                            f"No unallocated space or shrinkable partitions on {sel['name']}")
+                        radio_primary.set_visible(True); radio_primary.set_sensitive(False)
+                        if non_shrinkable_fs:
+                            fs_list = ", ".join(
+                                f"{x['dev']} ({x['fstype']})" for x in non_shrinkable_fs)
+                            radio_secondary.set_label(
+                                f"Cannot shrink {fs_list} – only btrfs/ext4/NTFS can be resized")
+                            radio_secondary.set_visible(True); radio_secondary.set_sensitive(False)
+                        if not radio_wipe.get_active():
+                            radio_wipe.set_active(True)
+                    else:
+                        radio_primary.set_label(
+                            f"No unallocated space or shrinkable partitions on {sel['name']}")
+                        radio_primary.set_visible(True); radio_primary.set_sensitive(False)
+                        if non_shrinkable_fs:
+                            fs_list = ", ".join(
+                                f"{x['dev']} ({x['fstype']})" for x in non_shrinkable_fs)
+                            radio_secondary.set_label(
+                                f"Cannot shrink {fs_list} – only btrfs/ext4/NTFS can be resized")
+                            radio_secondary.set_visible(True); radio_secondary.set_sensitive(False)
 
                 strat_frame.set_visible(True)
 
                 # Determine strategy
+                using_wipe = radio_wipe.get_visible() and radio_wipe.get_active()
                 using_shrink = (has_shrinkable and
                     radio_secondary.get_visible() and radio_secondary.get_active())
-                if has_shrinkable and not has_free:
+                if has_shrinkable and not has_free and not using_wipe:
                     using_shrink = True
 
-                if using_shrink:
+                if using_wipe:
+                    plan_state["strategy"] = "wipe_disk"
+                    plan_state["shrink_dev"] = None
+                    plan_state["shrink_gb"] = 0
+
+                    esp_gb = 0.5
+                    usable_gb = round(sel["size_gb"] - esp_gb - boot_gb, 1)
+
+                    change_lines.append("  ⚠ WARNING: This will ERASE ALL DATA on this disk!")
+                    change_lines.append("")
+                    change_lines.append("  1. Root partition is NOT modified (different disk)")
+                    change_lines.append(
+                        f"  2. Wipe {sel['name']} and create a new GPT partition table")
+                    change_lines.append(
+                        f"  3. Create 512 MB EFI System Partition (ESP)")
+                    change_lines.append(
+                        f"  4. Create {boot_gb} GB FAT32 boot partition (LINUX_LIVE)")
+                    change_lines.append(
+                        f"  5. Leave ~{usable_gb} GB unallocated for Linux installation")
+                    change_lines.append(
+                        f"  6. Configure UEFI/GRUB boot entry for {distro_label}")
+
+                    after_lines.append(
+                        f"  EFI System (ESP)       0.5 GB  ← UEFI boot files")
+                    after_lines.append(
+                        f"  LINUX_LIVE (FAT32)     {boot_gb} GB  ← {distro_label} live boot")
+                    after_lines.append(
+                        f"  [Unallocated – Linux]  ~{usable_gb} GB  ← for Linux installer")
+
+                elif using_shrink:
                     best = max(shrinkable, key=lambda s: s["free_gb"])
                     plan_state["strategy"] = "other_disk_shrink"
                     plan_state["shrink_dev"] = best["dev"]
@@ -1257,6 +1317,7 @@ class InstallerWindow(Gtk.ApplicationWindow):
         disk_combo.connect("changed", update_all)
         radio_primary.connect("toggled", update_all)
         radio_secondary.connect("toggled", update_all)
+        radio_wipe.connect("toggled", update_all)
 
         # Initial update
         update_all()
@@ -1393,6 +1454,10 @@ class InstallerWindow(Gtk.ApplicationWindow):
             # Use existing free space on another disk
             ok = self._strategy_use_free(target_disk, linux_gb, iso_path,
                                           distro, distro_key, custom_mode)
+        elif strategy == "wipe_disk":
+            # Wipe and reformat entire secondary disk
+            ok = self._strategy_wipe_disk(target_disk, linux_gb, iso_path,
+                                           distro, distro_key, custom_mode)
         else:
             self.log(f"Unknown strategy: {strategy}", error=True)
             return
@@ -2220,6 +2285,297 @@ class InstallerWindow(Gtk.ApplicationWindow):
         self._write_boot_instructions(
             boot_dev=boot_part_dev,
             linux_dev=linux_part_dev,
+            distro_label=distro["label"],
+        )
+        return True
+
+    # ── wipe-disk strategy (secondary drives only) ─────────────────────────
+    def _strategy_wipe_disk(self, disk_path, linux_gb, iso_path, distro,
+                            distro_key, custom_mode):
+        """Wipe the entire secondary disk, create GPT, ESP, boot partition,
+        and leave remaining space for the Linux installer."""
+        self.log("")
+        self.log("━━ Strategy: wipe & reformat entire disk ━━")
+        self.log(f"Target disk: {disk_path}")
+
+        boot_gb = MIN_BOOT_GB
+        esp_mib = 512  # 512 MiB EFI System Partition
+
+        # Safety: make sure this is NOT the root disk
+        root_info = get_root_fs_info()
+        if root_info:
+            root_disk, _ = self._resolve_disk_and_part(root_info["device"])
+            if root_disk and root_disk == disk_path:
+                self.log("REFUSING to wipe the disk containing the running OS!",
+                         error=True)
+                return False
+
+        # Unmount any partitions from this disk
+        self.log("Unmounting any mounted partitions on target disk…")
+        self.set_status("Unmounting target disk…")
+        parts, _, _ = get_disk_partitions(disk_path)
+        for p in parts:
+            if p["is_free"] or p["num"] == 0:
+                continue
+            dev_p = _part_dev_path(disk_path, p["num"])
+
+            # Deactivate swap if this partition is used as swap
+            code, swap_out, _ = run(["swapon", "--show=NAME", "--noheadings"])
+            if code == 0 and dev_p in swap_out:
+                self.log(f"  Deactivating swap on {dev_p}")
+                run(["swapoff", dev_p])
+
+            # Unmount if mounted
+            code, mnt_out, _ = run(["findmnt", "-n", "-o", "TARGET", dev_p])
+            if code == 0 and mnt_out.strip():
+                self.log(f"  Unmounting {dev_p} from {mnt_out.strip()}")
+                code, _, err = run(["umount", "-f", dev_p])
+                if code != 0:
+                    # Try lazy unmount as last resort
+                    self.log(f"  Force unmount failed, trying lazy unmount…")
+                    code, _, err = run(["umount", "-l", dev_p])
+                    if code != 0:
+                        self.log(f"  Failed to unmount {dev_p}: {err}", error=True)
+                        self.log("  Cannot proceed while partitions are in use.",
+                                 error=True)
+                        return False
+
+        # Remove any device-mapper references (LVM, LUKS, etc.)
+        for p in parts:
+            if p["is_free"] or p["num"] == 0:
+                continue
+            dev_p = _part_dev_path(disk_path, p["num"])
+            # Check for device-mapper holders
+            dev_name = os.path.basename(dev_p)
+            holders_dir = f"/sys/class/block/{dev_name}/holders"
+            if os.path.isdir(holders_dir):
+                for holder in os.listdir(holders_dir):
+                    self.log(f"  Removing device-mapper mapping: {holder}")
+                    run(["dmsetup", "remove", "--force", holder])
+
+        # Tell the kernel to drop partition references
+        self.log("Releasing kernel partition references…")
+        run(["partprobe", disk_path])
+        time.sleep(1)
+
+        # ── Inhibit automounting BEFORE touching disk ──────────────────
+        # Desktop environments (via udisks2) race to probe and mount new
+        # partitions, which blocks mkfs with "Device or resource busy".
+        # We must install inhibitors BEFORE creating any partitions.
+        udev_rule_path = "/run/udev/rules.d/99-ulli-inhibit.rules"
+        disk_basename = os.path.basename(disk_path)
+        udev_rule_installed = False
+        udisks_was_running = False
+
+        try:
+            os.makedirs("/run/udev/rules.d", exist_ok=True)
+            with open(udev_rule_path, "w") as f:
+                f.write(
+                    f'SUBSYSTEM=="block", KERNEL=="{disk_basename}*", '
+                    f'ENV{{UDISKS_IGNORE}}="1", ENV{{UDISKS_AUTO}}="0"\n')
+            run(["udevadm", "control", "--reload-rules"])
+            udev_rule_installed = True
+            self.log("Automount inhibit udev rule installed.")
+        except Exception as e:
+            self.log(f"Note: could not set udev inhibit rule: {e}")
+
+        # Stop udisks2 temporarily — this is the most reliable way to
+        # prevent automounting since udev rules alone don't always work
+        if shutil.which("systemctl"):
+            code, _, _ = run(["systemctl", "is-active", "--quiet", "udisks2"])
+            if code == 0:
+                self.log("Stopping udisks2 service to prevent automounting…")
+                run(["systemctl", "stop", "udisks2"])
+                udisks_was_running = True
+
+        try:
+            # Wipe filesystem signatures so the kernel/parted don't consider
+            # partitions "in use" based on residual superblocks
+            if shutil.which("wipefs"):
+                self.log(f"Wiping filesystem signatures on {disk_path}…")
+                run(["wipefs", "--all", "--force", disk_path])
+                for p in parts:
+                    if p["is_free"] or p["num"] == 0:
+                        continue
+                    dev_p = _part_dev_path(disk_path, p["num"])
+                    if os.path.exists(dev_p):
+                        run(["wipefs", "--all", "--force", dev_p])
+
+            time.sleep(1)
+
+            # Wipe the partition table and create a fresh GPT
+            self.log(f"Creating new GPT partition table on {disk_path}…")
+            self.set_status("Creating new partition table…")
+            code, _, err = run(["parted", "-s", disk_path, "mklabel", "gpt"])
+            if code != 0:
+                self.log(f"parted mklabel failed: {err}", error=True)
+                # Fallback: use sgdisk --zap-all which is more forceful
+                if shutil.which("sgdisk"):
+                    self.log("Trying sgdisk fallback…")
+                    code2, _, err2 = run(["sgdisk", "--zap-all", disk_path])
+                    if code2 != 0:
+                        self.log(f"sgdisk --zap-all also failed: {err2}", error=True)
+                        return False
+                    # sgdisk --zap-all leaves a blank disk; now create GPT
+                    code3, _, err3 = run(["sgdisk", "-o", disk_path])
+                    if code3 != 0:
+                        self.log(f"sgdisk -o failed: {err3}", error=True)
+                        return False
+                    self.log("GPT created via sgdisk fallback.")
+                else:
+                    self.log("sgdisk not available for fallback. Install gdisk package.",
+                             error=True)
+                    return False
+
+            run(["partprobe", disk_path])
+            time.sleep(1)
+
+            # Partition layout:
+            #   1. ESP:        1 MiB – 513 MiB  (512 MiB, FAT32, esp flag)
+            #   2. LINUX_LIVE: 513 MiB – (513 + boot_gb*1024) MiB  (FAT32, live ISO)
+            #   3. Remaining:  unallocated for the Linux installer
+            esp_start = 1        # MiB (1 MiB alignment)
+            esp_end = esp_start + esp_mib
+            boot_start = esp_end
+            boot_end = boot_start + boot_gb * 1024
+
+            self.log(f"Creating ESP partition: {esp_start}–{esp_end} MiB")
+            self.log(f"Creating boot partition: {boot_start}–{boot_end} MiB")
+            self.set_status("Creating partitions…")
+
+            # Create ESP
+            code, _, err = run(["parted", "-s", "--", disk_path,
+                                "mkpart", "EFI", "fat32",
+                                f"{esp_start}MiB", f"{esp_end}MiB",
+                                "set", "1", "esp", "on"])
+            if code != 0:
+                self.log(f"Failed to create ESP: {err}", error=True)
+                return False
+
+            # Create boot partition
+            code, _, err = run(["parted", "-s", "--", disk_path,
+                                "mkpart", "LINUX_LIVE", "fat32",
+                                f"{boot_start}MiB", f"{boot_end}MiB"])
+            if code != 0:
+                self.log(f"Failed to create boot partition: {err}", error=True)
+                return False
+
+            time.sleep(1)
+            run(["partprobe", disk_path])
+            if shutil.which("udevadm"):
+                run(["udevadm", "settle", "--timeout=10"])
+            time.sleep(1)
+
+            # Identify the new partitions
+            esp_dev = _part_dev_path(disk_path, 1)
+            boot_dev = _part_dev_path(disk_path, 2)
+
+            # Verify they exist
+            for dev in (esp_dev, boot_dev):
+                if not os.path.exists(dev):
+                    time.sleep(3)
+                    run(["partprobe", disk_path])
+                    if shutil.which("udevadm"):
+                        run(["udevadm", "settle", "--timeout=10"])
+                    time.sleep(2)
+                    if not os.path.exists(dev):
+                        self.log(f"Partition device {dev} not found after creation.",
+                                 error=True)
+                        return False
+
+            # Force-release anything holding these partitions
+            for dev in (esp_dev, boot_dev):
+                run(["umount", "-f", dev])
+                if shutil.which("udisksctl"):
+                    run(["udisksctl", "unmount", "-b", dev, "--no-user-interaction"])
+                if shutil.which("wipefs"):
+                    run(["wipefs", "--all", "--force", dev])
+                # Kill any process using the device
+                if shutil.which("fuser"):
+                    run(["fuser", "-k", dev])
+                # Check for device-mapper holders on this partition
+                dev_name = os.path.basename(dev)
+                holders_dir = f"/sys/class/block/{dev_name}/holders"
+                if os.path.isdir(holders_dir):
+                    for holder in os.listdir(holders_dir):
+                        self.log(f"  Removing dm holder: {holder}")
+                        run(["dmsetup", "remove", "--force", holder])
+
+            time.sleep(1)
+
+            # Wipe the first few MB of each new partition to clear any residual
+            # signatures and release kernel probe locks before formatting
+            for dev in (esp_dev, boot_dev):
+                run(["dd", "if=/dev/zero", f"of={dev}",
+                     "bs=1M", "count=2", "conv=notrunc", "status=none"])
+            run(["partprobe", disk_path])
+            if shutil.which("udevadm"):
+                run(["udevadm", "settle", "--timeout=5"])
+            time.sleep(1)
+
+            # Format partitions
+            for label, dev, name in [("ESP", esp_dev, "EFI System Partition"),
+                                     ("LINUX_LIVE", boot_dev, "boot partition")]:
+                self.log(f"Formatting {name} ({dev}) as FAT32…")
+                self.set_status(f"Formatting {name}…")
+
+                fmt_ok = False
+                for attempt in range(4):
+                    code, _, err = run(["mkfs.fat", "-F32", "-n", label, dev])
+                    if code == 0:
+                        fmt_ok = True
+                        break
+                    self.log(f"  Format attempt {attempt+1}/4 failed: {err}")
+                    run(["umount", "-f", dev])
+                    if shutil.which("fuser"):
+                        run(["fuser", "-k", dev])
+                    run(["dd", "if=/dev/zero", f"of={dev}",
+                         "bs=1M", "count=1", "conv=notrunc", "status=none"])
+                    time.sleep(2)
+
+                if not fmt_ok:
+                    self.log(f"mkfs.fat {name} failed: {err}", error=True)
+                    return False
+
+        finally:
+            # Always remove the udev inhibit rule and restart udisks2
+            if udev_rule_installed:
+                try:
+                    os.unlink(udev_rule_path)
+                    run(["udevadm", "control", "--reload-rules"])
+                    self.log("Automount inhibit rule removed.")
+                except Exception:
+                    pass
+            if udisks_was_running:
+                self.log("Restarting udisks2 service…")
+                run(["systemctl", "start", "udisks2"])
+
+        # Mount and copy ISO to boot partition
+        mnt = "/mnt/linux_installer_boot"
+        os.makedirs(mnt, exist_ok=True)
+        run(["mount", boot_dev, mnt])
+        try:
+            ok = self._copy_iso_to_mount(iso_path, mnt, distro, distro_key)
+        finally:
+            run(["umount", mnt])
+
+        if not ok:
+            return False
+
+        # Log the final layout
+        self.log("")
+        self.log(f"Disk {disk_path} wiped and reformatted successfully:")
+        self.log(f"  Partition 1: {esp_dev}  – EFI System Partition (512 MB)")
+        self.log(f"  Partition 2: {boot_dev} – LINUX_LIVE boot ({boot_gb} GB)")
+        remaining_gb = round(
+            (get_disk_partitions(disk_path)[2] / 1024) - (esp_mib / 1024) - boot_gb, 1)
+        if remaining_gb > 0:
+            self.log(f"  Remaining:   ~{remaining_gb} GB unallocated for Linux installer")
+
+        self._boot_part_dev = boot_dev
+        self._write_boot_instructions(
+            boot_dev=boot_dev,
+            linux_dev=f"{disk_path} (remaining unallocated space)",
             distro_label=distro["label"],
         )
         return True
