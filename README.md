@@ -1,4 +1,4 @@
-# ULLI    USB-Less Linux Installer
+# ULLI:    USB-Less Linux Installer
 
 **Donations/tips:** [https://ko-fi.com/rltvty](https://ko-fi.com/rltvty)
 
