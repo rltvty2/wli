@@ -5,11 +5,11 @@ A GUI tool to install a second Linux distro alongside your existing one —
 
 ## Running
 
-Right click on ulli-linux-v090147.py, then click properties, and then, under the permissions tab check "Allow this file to run as a program". Then double click on the .py and click "Run in Terminal"
+Right click on ulli-linux.py, then click properties, and then, under the permissions tab check "Allow this file to run as a program". Then double click on the .py and click "Run in Terminal"
 
 Alternatively just run this code in your terminal, in the same folder you downloaded to:
 
-sudo python3 ulli-linux-v090147.py
+sudo python3 ulli-linux.py
 
 
 
