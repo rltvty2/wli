@@ -6,11 +6,21 @@ Install a bootable Linux partition to your hard drive without a USB stick or man
 
 WARNING: THIS SOFTWARE IS IN ALPHA AND IS NOT RECOMMENDED FOR USE ON YOUR MAIN/CRITICAL PC. THIS SOFTWARE IS PROVIDED AS-IS. THE AUTHOR ACCEPTS NO LIABILITY FOR DAMAGES OR DATA LOSS CAUSED BY THIS SOFTWARE. BACK UP YOUR DATA BEFORE USE. USE AT YOUR OWN RISK.
 
-For Linux you must download ulli-linux-v090145.py, then in the terminal run the following code: 
 
-sudo python3 ulli-linux-v090145.py
+Running:
+
+For Linux you must download ulli-linux-v090146.py, then in the terminal run the following code: 
+
+Right click on ulli-linux-v090146.py, then click properties, and then, under the permissions tab check "Allow this file to run as a program". Then double click on the .py and click "Run in Terminal"
+
+Alternatively just run this code in your terminal, in the same folder you downloaded to:
+
+sudo python3 ulli-linux-v090146.py
+
 
 For Windows you must download ulli-windows-v090145.zip, right click on the .bat, and then run the program as administrator.
+
+
 
 You may have to disable bitlocker/decrypt your hard drive to use this software.
 
