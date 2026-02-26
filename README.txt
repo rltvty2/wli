@@ -18,7 +18,9 @@ sudo python3 ulli-linux-v090146.py
 
 Running under Windows:
 
-Download ulli-windows-v090145.zip, right click on the .bat, and then run the program as administrator.
+Download ulli-windows-v090146.zip, right click on the .bat, and then run the program as administrator.
+
+Alternatively you can turn off smart app control under windows security, and then simply double click on the .bat to run the program.
 
 
 You may have to disable bitlocker/decrypt your hard drive to use this software.
