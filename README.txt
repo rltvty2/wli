@@ -9,11 +9,11 @@ WARNING: THIS SOFTWARE IS IN ALPHA AND IS NOT RECOMMENDED FOR USE ON YOUR MAIN/C
 
 Running under Linux:
 
-Download ulli-linux-v090147.py, right click on ulli-linux-v090147.py, click properties, and then, under the permissions tab check "Allow this file to run as a program". Then double click on the .py and click "Run in Terminal"
+Download ulli-linux.py, right click on ulli-linux.py, click properties, and then, under the permissions tab check "Allow this file to run as a program". Then double click on the .py and click "Run in Terminal"
 
 Alternatively just run this code in your terminal, in the same folder you downloaded to:
 
-sudo python3 ulli-linux-v090147.py
+sudo python3 ulli-linux.py
 
 
 Running under Windows:
