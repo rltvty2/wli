@@ -20,7 +20,8 @@ gi.require_version("Gtk", "3.0")
 gi.require_version("Vte", "2.91")
 from gi.repository import Gtk, Gdk, GLib, Pango, Vte
 
-import os, sys, subprocess, threading, hashlib, shutil, json, time, signal
+import os, sys, subprocess, threading, hashlib, shutil, json, time, signal, re
+import urllib.request, urllib.error
 from pathlib import Path
 from datetime import datetime
 
@@ -28,6 +29,7 @@ from datetime import datetime
 
 MIN_BOOT_GB   = 7
 MIN_LINUX_GB  = 20
+GiB           = 1_073_741_824
 
 DISTROS = {
     "mint": {
@@ -100,15 +102,6 @@ def run(cmd, **kw):
     out = r.stdout.strip() if r.stdout else ""
     err = r.stderr.strip() if r.stderr else ""
     return r.returncode, out, err
-
-def run_root(cmd, **kw):
-    """Run a command as root.
-
-    Since the application re-launches itself with root privileges at
-    startup (via ensure_root), this is equivalent to run().  Kept for
-    clarity and backwards-compatibility.
-    """
-    return run(cmd, **kw)
 
 def get_root_fs_info():
     """Return dict with device, fstype, mountpoint for /."""
@@ -190,8 +183,7 @@ def get_all_disks():
                 })
         return disks
 
-    import json as _json
-    data = _json.loads(out)
+    data = json.loads(out)
     disks = []
     for dev in data.get("blockdevices", []):
         if dev.get("type") != "disk":
@@ -356,6 +348,17 @@ def _part_dev_path(disk_path, part_num):
     return f"{disk_path}{part_num}"
 
 
+def _parse_bytes_value(line):
+    """Extract the integer before 'bytes' in a line like 'Current volume size: 123456 bytes'."""
+    parts = line.split()
+    for i, p in enumerate(parts):
+        if p == "bytes" and i > 0:
+            try:
+                return int(parts[i - 1])
+            except ValueError:
+                pass
+    return 0
+
 def _ntfs_info(dev_path):
     """Query NTFS volume size and free space via ntfsresize --info.
     Returns (total_bytes, free_bytes) or (None, None)."""
@@ -365,27 +368,12 @@ def _ntfs_info(dev_path):
     if code != 0:
         return None, None
     current_size = 0
-    # "You might resize at ..." line gives the minimum size
     min_size = 0
     for line in out.splitlines():
         if "Current volume size" in line and "bytes" in line:
-            parts = line.split()
-            for i, p in enumerate(parts):
-                if p == "bytes" and i > 0:
-                    try:
-                        current_size = int(parts[i - 1])
-                    except ValueError:
-                        pass
-                    break
-        if "You might resize at" in line and "bytes" in line:
-            parts = line.split()
-            for i, p in enumerate(parts):
-                if p == "bytes" and i > 0:
-                    try:
-                        min_size = int(parts[i - 1])
-                    except ValueError:
-                        pass
-                    break
+            current_size = _parse_bytes_value(line)
+        elif "You might resize at" in line and "bytes" in line:
+            min_size = _parse_bytes_value(line)
     if current_size > 0:
         free = current_size - min_size if min_size > 0 else current_size // 2
         return current_size, free
@@ -1155,29 +1143,17 @@ class InstallerWindow(Gtk.ApplicationWindow):
                 radio_wipe.set_sensitive(disk_size_ok)
 
                 if not has_free and not has_shrinkable:
-                    if disk_size_ok:
-                        # Wipe is the only available option
-                        radio_primary.set_label(
-                            f"No unallocated space or shrinkable partitions on {sel['name']}")
-                        radio_primary.set_visible(True); radio_primary.set_sensitive(False)
-                        if non_shrinkable_fs:
-                            fs_list = ", ".join(
-                                f"{x['dev']} ({x['fstype']})" for x in non_shrinkable_fs)
-                            radio_secondary.set_label(
-                                f"Cannot shrink {fs_list} – only btrfs/ext4/NTFS can be resized")
-                            radio_secondary.set_visible(True); radio_secondary.set_sensitive(False)
-                        if not radio_wipe.get_active():
-                            radio_wipe.set_active(True)
-                    else:
-                        radio_primary.set_label(
-                            f"No unallocated space or shrinkable partitions on {sel['name']}")
-                        radio_primary.set_visible(True); radio_primary.set_sensitive(False)
-                        if non_shrinkable_fs:
-                            fs_list = ", ".join(
-                                f"{x['dev']} ({x['fstype']})" for x in non_shrinkable_fs)
-                            radio_secondary.set_label(
-                                f"Cannot shrink {fs_list} – only btrfs/ext4/NTFS can be resized")
-                            radio_secondary.set_visible(True); radio_secondary.set_sensitive(False)
+                    radio_primary.set_label(
+                        f"No unallocated space or shrinkable partitions on {sel['name']}")
+                    radio_primary.set_visible(True); radio_primary.set_sensitive(False)
+                    if non_shrinkable_fs:
+                        fs_list = ", ".join(
+                            f"{x['dev']} ({x['fstype']})" for x in non_shrinkable_fs)
+                        radio_secondary.set_label(
+                            f"Cannot shrink {fs_list} – only btrfs/ext4/NTFS can be resized")
+                        radio_secondary.set_visible(True); radio_secondary.set_sensitive(False)
+                    if disk_size_ok and not radio_wipe.get_active():
+                        radio_wipe.set_active(True)
 
                 strat_frame.set_visible(True)
 
@@ -1494,8 +1470,6 @@ class InstallerWindow(Gtk.ApplicationWindow):
 
     # ── ISO download ──────────────────────────────────────────────────────────
     def _download_iso(self, distro, dest):
-        import urllib.request, urllib.error
-
         for i, url in enumerate(distro["mirrors"]):
             host = url.split("/")[2]
             self.log(f"Trying mirror {i+1}/{len(distro['mirrors'])}: {host}")
@@ -1555,15 +1529,146 @@ class InstallerWindow(Gtk.ApplicationWindow):
         self.log(f"✗ Actual:   {actual}",   error=True)
         return False
 
+    # ── shared strategy helpers ─────────────────────────────────────────────
+
+    def _resize_partition_entry(self, disk_dev, part_num, part_start_mib, new_size_mib):
+        """Shrink a partition table entry via sfdisk (with parted fallback).
+        Returns actual new end MiB or None on failure."""
+        new_part_end_mib = part_start_mib + new_size_mib
+        new_size_sectors = new_size_mib * 2048
+        self.log(f"Shrinking partition {part_num}: end → {new_part_end_mib} MiB "
+                 f"({new_size_sectors} sectors)")
+        self.set_status("Shrinking partition…")
+
+        sfdisk_script = f"{part_num}: size={new_size_sectors}\n"
+        result = subprocess.run(
+            ["sfdisk", "--no-reread", "-N", str(part_num), disk_dev],
+            input=sfdisk_script, capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            self.log(f"sfdisk resize failed: {result.stderr.strip()}", error=True)
+            self.log("Trying parted fallback…")
+            env = os.environ.copy()
+            env["LANG"] = "C"
+            env["LC_ALL"] = "C"
+            result2 = subprocess.run(
+                ["parted", "---pretend-input-tty", "-s", "--", disk_dev,
+                 "resizepart", str(part_num), f"{new_part_end_mib}MiB"],
+                input="Yes\n", capture_output=True, text=True, env=env,
+            )
+            if result2.returncode != 0:
+                self.log(f"Partition resize failed: {result2.stderr.strip()}", error=True)
+                return None
+
+        run(["partprobe", disk_dev])
+        time.sleep(2)
+
+        # Re-read actual end
+        parts, _, _ = get_disk_partitions(disk_dev)
+        for p in parts:
+            if not p["is_free"] and p["num"] == part_num:
+                self.log(f"Partition {part_num} now ends at {p['end_mib']} MiB.")
+                return p["end_mib"]
+
+        self.log("Cannot read partition table after resize.", error=True)
+        return None
+
+    def _create_boot_linux_parts(self, disk_path, boot_start, boot_end,
+                                  linux_start, linux_end_str, is_gpt):
+        """Create boot (LINUX_LIVE) and linux partitions via parted.
+        linux_end_str can be "100%" or "NNNMiB".
+        Returns (boot_dev, linux_dev) or None on failure."""
+        self.log(f"Creating boot partition  {boot_start}–{boot_end} MiB …")
+        self.set_status("Creating partitions…")
+
+        if is_gpt:
+            mkpart_boot  = ["mkpart", "LINUX_LIVE", "fat32",
+                            f"{boot_start}MiB", f"{boot_end}MiB"]
+            mkpart_linux = ["mkpart", "linux", "ext4",
+                            f"{linux_start}MiB", linux_end_str]
+        else:
+            mkpart_boot  = ["mkpart", "primary", "fat32",
+                            f"{boot_start}MiB", f"{boot_end}MiB"]
+            mkpart_linux = ["mkpart", "primary", "ext4",
+                            f"{linux_start}MiB", linux_end_str]
+
+        cmd = ["parted", "-s", "--", disk_path] + mkpart_boot + mkpart_linux
+        code, _, err = run(cmd)
+        if code != 0:
+            # Retry without fs-type hint
+            self.log(f"parted mkpart: {err} – retrying without FS type hint", error=True)
+            if is_gpt:
+                mkpart_boot2  = ["mkpart", "LINUX_LIVE",
+                                 f"{boot_start}MiB", f"{boot_end}MiB"]
+                mkpart_linux2 = ["mkpart", "linux",
+                                 f"{linux_start}MiB", linux_end_str]
+            else:
+                mkpart_boot2  = ["mkpart", "primary",
+                                 f"{boot_start}MiB", f"{boot_end}MiB"]
+                mkpart_linux2 = ["mkpart", "primary",
+                                 f"{linux_start}MiB", linux_end_str]
+            cmd2 = ["parted", "-s", "--", disk_path] + mkpart_boot2 + mkpart_linux2
+            code, _, err2 = run(cmd2)
+            if code != 0:
+                self.log(f"Cannot create partitions: {err2}", error=True)
+                return None
+
+        time.sleep(2)
+        run(["partprobe", disk_path])
+        time.sleep(2)
+
+        # Find newly created partitions by matching start positions
+        parts, _, _ = get_disk_partitions(disk_path)
+        boot_part_num = linux_part_num = None
+        for p in parts:
+            if p["is_free"] or p["num"] == 0:
+                continue
+            if abs(p["start_mib"] - boot_start) <= 2:
+                boot_part_num = p["num"]
+            elif abs(p["start_mib"] - linux_start) <= 2:
+                linux_part_num = p["num"]
+
+        if boot_part_num is None or linux_part_num is None:
+            self.log(f"Cannot identify new partitions (boot={boot_part_num}, "
+                     f"linux={linux_part_num}). Expected starts: "
+                     f"{boot_start}, {linux_start} MiB", error=True)
+            return None
+
+        boot_dev = _part_dev_path(disk_path, boot_part_num)
+        linux_dev = _part_dev_path(disk_path, linux_part_num)
+        self.log(f"Boot partition  : {boot_dev}")
+        self.log(f"Linux partition : {linux_dev}")
+        return boot_dev, linux_dev
+
+    def _format_and_populate_boot(self, boot_dev, iso_path, distro, distro_key):
+        """Format boot_dev as FAT32, mount it, copy ISO contents. Returns True on success."""
+        self.set_status("Formatting boot partition FAT32…")
+        code, _, err = run(["mkfs.fat", "-F32", "-n", "LINUX_LIVE", boot_dev])
+        if code != 0:
+            self.log(f"mkfs.fat failed: {err}", error=True)
+            return False
+
+        mnt = "/mnt/linux_installer_boot"
+        os.makedirs(mnt, exist_ok=True)
+        run(["mount", boot_dev, mnt])
+        try:
+            ok = self._copy_iso_to_mount(iso_path, mnt, distro, distro_key)
+        finally:
+            run(["umount", mnt])
+        return ok
+
+    def _finalize_strategy(self, boot_dev, linux_dev, distro_label):
+        """Set _boot_part_dev, log results, write instructions."""
+        self.log(f"Boot partition ready at {boot_dev}.")
+        self.log(f"Linux partition at {linux_dev} – "
+                 "the installer will format this during installation.")
+        self._boot_part_dev = boot_dev
+        self._write_boot_instructions(
+            boot_dev=boot_dev, linux_dev=linux_dev, distro_label=distro_label)
+
     # ── btrfs strategy ────────────────────────────────────────────────────────
     def _strategy_btrfs(self, device, linux_gb, iso_path, distro, distro_key, custom_mode):
-        """
-        1. Shrink the btrfs filesystem to free space.
-        2. Create a new primary partition in the freed space.
-        3. Format it FAT32.
-        4. Copy ISO contents onto it.
-        5. Register a GRUB entry.
-        """
+        """Shrink root btrfs, resize partition entry, create boot+linux partitions."""
         self.log("")
         self.log("━━ Strategy: btrfs shrink + new partition ━━")
 
@@ -1576,7 +1681,6 @@ class InstallerWindow(Gtk.ApplicationWindow):
             self.log(f"btrfs usage failed: {err}", error=True)
             return False
 
-        # parse "Device size" and top-level "Used" from btrfs usage output
         dev_size = used = 0
         for line in out.splitlines():
             stripped = line.strip()
@@ -1586,8 +1690,8 @@ class InstallerWindow(Gtk.ApplicationWindow):
                 used = int(stripped.split(":")[1].strip().split()[0])
 
         free_bytes = dev_size - used
-        needed_bytes = total_shrink_gb * 1_073_741_824
-        safe_free = free_bytes - (10 * 1_073_741_824)  # keep 10 GB buffer
+        needed_bytes = total_shrink_gb * GiB
+        safe_free = free_bytes - (10 * GiB)
 
         self.log(f"btrfs device size : {bytes_to_gb(dev_size)} GB")
         self.log(f"btrfs used        : {bytes_to_gb(used)} GB")
@@ -1612,221 +1716,65 @@ class InstallerWindow(Gtk.ApplicationWindow):
             return False
         self.log("btrfs filesystem shrunk successfully.")
 
-        # ── find the parent disk and partition ──
+        # ── find parent disk and partition, get layout ──
         disk_dev, part_num = self._resolve_disk_and_part(device)
         if not disk_dev:
             self.log("Cannot resolve parent disk for partition.", error=True)
             return False
-
         self.log(f"Disk: {disk_dev}  Partition: {part_num}")
 
-        # ── get partition layout ──
-        code, out, _ = run(["parted", "-m", disk_dev, "unit", "MiB", "print"])
-        part_start_mib = None
-        part_end_mib = None
-        disk_label = "gpt"  # default assumption
-        disk_end_mib = None
-        # Track next partition after ours to know the upper bound for new partitions
+        parts, disk_label, _ = get_disk_partitions(disk_dev)
+        is_gpt = "gpt" in disk_label.lower()
+
+        part_start_mib = part_end_mib = None
         next_part_start_mib = None
-        for line in out.splitlines():
-            cols = line.rstrip(";").split(":")
-            # Disk info line (2nd line in -m output) contains the label and disk size
-            if len(cols) >= 6 and cols[0] == disk_dev:
-                disk_label = cols[5]  # "gpt" or "msdos"
-                disk_end_mib = int(float(cols[1].replace("MiB", "")))
-            if len(cols) >= 3 and cols[0].isdigit():
-                pn = int(cols[0])
-                if pn == part_num:
-                    part_start_mib = int(float(cols[1].replace("MiB", "")))
-                    part_end_mib = int(float(cols[2].replace("MiB", "")))
-                elif pn > part_num and next_part_start_mib is None:
-                    next_part_start_mib = int(float(cols[1].replace("MiB", "")))
-        if part_end_mib is None or part_start_mib is None:
+        for p in parts:
+            if p["is_free"]:
+                continue
+            if p["num"] == part_num:
+                part_start_mib = p["start_mib"]
+                part_end_mib = p["end_mib"]
+            elif p["num"] > part_num and next_part_start_mib is None:
+                next_part_start_mib = p["start_mib"]
+
+        if part_start_mib is None or part_end_mib is None:
             self.log("Cannot determine partition boundaries.", error=True)
             return False
 
-        is_gpt = "gpt" in disk_label.lower()
-
-        # Calculate new partition size
         new_part_size_mib = part_end_mib - part_start_mib - total_shrink_gb * 1024
         if new_part_size_mib < 1:
             self.log("Calculated new partition size is too small!", error=True)
             return False
 
-        # ── shrink the existing partition to match the shrunk filesystem ──
-        new_part_end_mib = part_start_mib + new_part_size_mib
-        self.log(f"Shrinking partition {part_num}: {part_start_mib}–{part_end_mib} → "
-                 f"{part_start_mib}–{new_part_end_mib} MiB")
-        self.set_status("Shrinking partition…")
-
-        # Use sfdisk to resize — it's non-interactive and handles mounted
-        # partitions without prompting (unlike parted resizepart).
-        # 1 MiB = 2048 sectors (512-byte sectors).
-        new_size_sectors = new_part_size_mib * 2048
-        sfdisk_script = f"{part_num}: size={new_size_sectors}\n"
-
-        self.log(f"sfdisk: resizing partition {part_num} to {new_part_size_mib} MiB "
-                 f"({new_size_sectors} sectors)")
-        result = subprocess.run(
-            ["sfdisk", "--no-reread", "-N", str(part_num), disk_dev],
-            input=sfdisk_script, capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            self.log(f"sfdisk resize failed: {result.stderr.strip()}", error=True)
-            # Fallback: try parted with LANG=C to avoid locale issues
-            self.log("Trying parted fallback…")
-            env = os.environ.copy()
-            env["LANG"] = "C"
-            env["LC_ALL"] = "C"
-            result2 = subprocess.run(
-                ["parted", "---pretend-input-tty", "-s", "--", disk_dev,
-                 "resizepart", str(part_num), f"{new_part_end_mib}MiB"],
-                input="Yes\n", capture_output=True, text=True, env=env,
-            )
-            if result2.returncode != 0:
-                self.log(f"Partition resize failed: {result2.stderr.strip()}", error=True)
-                self.log("You may need to grow the btrfs filesystem back with: "
-                         "btrfs filesystem resize max /", error=True)
-                return False
-
-        # Re-read partition table and get actual new end of partition
-        run(["partprobe", disk_dev])
-        time.sleep(2)
-
-        code, out, _ = run(["parted", "-m", disk_dev, "unit", "MiB", "print"])
-        actual_new_end = None
-        for line in out.splitlines():
-            cols = line.rstrip(";").split(":")
-            if len(cols) >= 3 and cols[0].isdigit() and int(cols[0]) == part_num:
-                actual_new_end = int(float(cols[2].replace("MiB", "")))
+        # ── shrink the partition table entry ──
+        actual_new_end = self._resize_partition_entry(
+            disk_dev, part_num, part_start_mib, new_part_size_mib)
         if actual_new_end is None:
-            self.log("Cannot read partition table after resize.", error=True)
+            self.log("You may need to grow the btrfs filesystem back with: "
+                     "btrfs filesystem resize max /", error=True)
             return False
 
-        self.log(f"Partition {part_num} now ends at {actual_new_end} MiB.")
-
-        # Calculate new partition positions from the ACTUAL end
-        boot_part_start  = actual_new_end + 1
-        boot_part_end    = boot_part_start + MIN_BOOT_GB * 1024
-        linux_part_start = boot_part_end + 1
-
-        # Determine the upper bound for the linux partition
+        # ── create boot + linux partitions in freed space ──
+        boot_start = actual_new_end + 1
+        boot_end = boot_start + MIN_BOOT_GB * 1024
+        linux_start = boot_end + 1
         if next_part_start_mib is not None:
-            linux_part_end = f"{next_part_start_mib - 1}MiB"
+            linux_end_str = f"{next_part_start_mib - 1}MiB"
             self.log(f"Next partition starts at {next_part_start_mib} MiB, "
                      f"linux partition will end at {next_part_start_mib - 1} MiB")
         else:
-            linux_part_end = "100%"
+            linux_end_str = "100%"
 
-        self.log(f"Partition shrunk successfully.")
+        result = self._create_boot_linux_parts(
+            disk_dev, boot_start, boot_end, linux_start, linux_end_str, is_gpt)
+        if result is None:
+            return False
+        boot_part_dev, linux_part_dev = result
 
-        # ── create new partitions in the freed space ──
-        self.log(f"Creating boot partition  {boot_part_start}–{boot_part_end} MiB …")
-        self.set_status("Creating boot partition…")
-
-        if is_gpt:
-            # GPT mkpart syntax: mkpart NAME fs-type start end
-            mkpart_boot  = ["mkpart", "LINUX_LIVE", "fat32",
-                            f"{boot_part_start}MiB", f"{boot_part_end}MiB"]
-            mkpart_linux = ["mkpart", "linux", "ext4",
-                            f"{linux_part_start}MiB", linux_part_end]
-        else:
-            # MBR mkpart syntax: mkpart primary [fs-type] start end
-            mkpart_boot  = ["mkpart", "primary", "fat32",
-                            f"{boot_part_start}MiB", f"{boot_part_end}MiB"]
-            mkpart_linux = ["mkpart", "primary", "ext4",
-                            f"{linux_part_start}MiB", linux_part_end]
-
-        cmd = ["parted", "-s", "--", disk_dev] + mkpart_boot + mkpart_linux
-        code, _, err = run(cmd)
-        if code != 0:
-            # Retry without fs-type hint
-            self.log(f"parted mkpart: {err} – retrying without FS type hint", error=True)
-            if is_gpt:
-                mkpart_boot2  = ["mkpart", "LINUX_LIVE",
-                                 f"{boot_part_start}MiB", f"{boot_part_end}MiB"]
-                mkpart_linux2 = ["mkpart", "linux",
-                                 f"{linux_part_start}MiB", linux_part_end]
-            else:
-                mkpart_boot2  = ["mkpart", "primary",
-                                 f"{boot_part_start}MiB", f"{boot_part_end}MiB"]
-                mkpart_linux2 = ["mkpart", "primary",
-                                 f"{linux_part_start}MiB", linux_part_end]
-
-            cmd2 = ["parted", "-s", "--", disk_dev] + mkpart_boot2 + mkpart_linux2
-            code, _, err2 = run(cmd2)
-            if code != 0:
-                self.log(f"Cannot create partitions: {err2}", error=True)
-                return False
-
-        time.sleep(2)
-        run(["partprobe", disk_dev])
-        time.sleep(2)
-
-        # Find newly created partitions by matching their start positions
-        code, out, _ = run(["parted", "-m", disk_dev, "unit", "MiB", "print"])
-        boot_part_num = None
-        linux_part_num = None
-        for line in out.splitlines():
-            cols = line.rstrip(";").split(":")
-            if len(cols) >= 3 and cols[0].isdigit():
-                pn = int(cols[0])
-                start = int(float(cols[1].replace("MiB", "")))
-                # Match within 2 MiB tolerance
-                if abs(start - boot_part_start) <= 2:
-                    boot_part_num = pn
-                elif abs(start - linux_part_start) <= 2:
-                    linux_part_num = pn
-
-        if boot_part_num is None or linux_part_num is None:
-            self.log(f"Cannot identify new partitions (boot={boot_part_num}, "
-                     f"linux={linux_part_num}). Expected starts: "
-                     f"{boot_part_start}, {linux_part_start} MiB", error=True)
-            self.log(f"Partition table:\n{out}")
+        if not self._format_and_populate_boot(boot_part_dev, iso_path, distro, distro_key):
             return False
 
-        # Construct device paths (handle nvme naming: nvme0n1p8 vs sda8)
-        if f"{disk_dev}p{boot_part_num}" in out or \
-           os.path.exists(f"{disk_dev}p{boot_part_num}"):
-            boot_part_dev  = f"{disk_dev}p{boot_part_num}"
-            linux_part_dev = f"{disk_dev}p{linux_part_num}"
-        else:
-            boot_part_dev  = f"{disk_dev}{boot_part_num}"
-            linux_part_dev = f"{disk_dev}{linux_part_num}"
-
-        self.log(f"Boot partition  : {boot_part_dev}")
-        self.log(f"Linux partition : {linux_part_dev} (unformatted – for installer)")
-
-        # Format boot partition FAT32
-        self.set_status("Formatting boot partition FAT32…")
-        code, _, err = run(["mkfs.fat", "-F32", "-n", "LINUX_LIVE", boot_part_dev])
-        if code != 0:
-            self.log(f"mkfs.fat failed: {err}", error=True)
-            return False
-
-        # Mount and copy ISO
-        mnt = "/mnt/linux_installer_boot"
-        os.makedirs(mnt, exist_ok=True)
-        run(["mount", boot_part_dev, mnt])
-        try:
-            ok = self._copy_iso_to_mount(iso_path, mnt, distro, distro_key)
-        finally:
-            run(["umount", mnt])
-
-        if not ok:
-            return False
-
-        self.log(f"Boot partition ready at {boot_part_dev}.")
-        self.log(f"Linux unallocated partition at {linux_part_dev} – "
-                 "the installer will format this during installation.")
-
-        self._boot_part_dev = boot_part_dev
-
-        self._write_boot_instructions(
-            boot_dev=boot_part_dev,
-            linux_dev=linux_part_dev,
-            distro_label=distro["label"],
-        )
+        self._finalize_strategy(boot_part_dev, linux_part_dev, distro["label"])
         return True
 
     # ── use-free-space strategy (root or other disk) ─────────────────────────
@@ -1836,14 +1784,12 @@ class InstallerWindow(Gtk.ApplicationWindow):
         self.log("")
         self.log("━━ Strategy: use existing unallocated space ━━")
 
-        boot_gb = MIN_BOOT_GB
-        total_needed_gb = linux_gb + boot_gb
+        total_needed_gb = linux_gb + MIN_BOOT_GB
 
-        # Find the largest free region on the disk
-        parts, disk_label, disk_size_mib = get_disk_partitions(disk_path)
+        parts, disk_label, _ = get_disk_partitions(disk_path)
         is_gpt = "gpt" in disk_label.lower()
 
-        # Find largest free region
+        # Find largest free region that fits
         best_free = None
         for p in parts:
             if p["is_free"] and p["size_mib"] >= total_needed_gb * 1024:
@@ -1857,90 +1803,21 @@ class InstallerWindow(Gtk.ApplicationWindow):
         self.log(f"Using free region: {best_free['start_mib']}–{best_free['end_mib']} MiB "
                  f"({round(best_free['size_mib'] / 1024, 1)} GB)")
 
-        # Create boot partition and linux partition in the free region
         boot_start = best_free["start_mib"] + 1
-        boot_end = boot_start + boot_gb * 1024
+        boot_end = boot_start + MIN_BOOT_GB * 1024
         linux_start = boot_end + 1
-        linux_end = best_free["end_mib"] - 1
+        linux_end_str = f"{best_free['end_mib'] - 1}MiB"
 
-        self.log(f"Creating boot partition  {boot_start}–{boot_end} MiB …")
-        self.log(f"Creating linux partition {linux_start}–{linux_end} MiB …")
-        self.set_status("Creating partitions in free space…")
+        result = self._create_boot_linux_parts(
+            disk_path, boot_start, boot_end, linux_start, linux_end_str, is_gpt)
+        if result is None:
+            return False
+        boot_dev, linux_dev = result
 
-        if is_gpt:
-            mkpart_boot  = ["mkpart", "LINUX_LIVE", "fat32",
-                            f"{boot_start}MiB", f"{boot_end}MiB"]
-            mkpart_linux = ["mkpart", "linux", "ext4",
-                            f"{linux_start}MiB", f"{linux_end}MiB"]
-        else:
-            mkpart_boot  = ["mkpart", "primary", "fat32",
-                            f"{boot_start}MiB", f"{boot_end}MiB"]
-            mkpart_linux = ["mkpart", "primary", "ext4",
-                            f"{linux_start}MiB", f"{linux_end}MiB"]
-
-        cmd = ["parted", "-s", "--", disk_path] + mkpart_boot + mkpart_linux
-        code, _, err = run(cmd)
-        if code != 0:
-            self.log(f"parted mkpart: {err}", error=True)
+        if not self._format_and_populate_boot(boot_dev, iso_path, distro, distro_key):
             return False
 
-        time.sleep(2)
-        run(["partprobe", disk_path])
-        time.sleep(2)
-
-        # Find newly created partitions
-        code, out, _ = run(["parted", "-m", disk_path, "unit", "MiB", "print"])
-        boot_part_num = linux_part_num = None
-        for line in out.splitlines():
-            cols = line.rstrip(";").split(":")
-            if len(cols) >= 3 and cols[0].isdigit():
-                pn = int(cols[0])
-                start = int(float(cols[1].replace("MiB", "")))
-                if abs(start - boot_start) <= 2:
-                    boot_part_num = pn
-                elif abs(start - linux_start) <= 2:
-                    linux_part_num = pn
-
-        if boot_part_num is None or linux_part_num is None:
-            self.log(f"Cannot identify new partitions (boot={boot_part_num}, "
-                     f"linux={linux_part_num}).", error=True)
-            return False
-
-        boot_part_dev  = _part_dev_path(disk_path, boot_part_num)
-        linux_part_dev = _part_dev_path(disk_path, linux_part_num)
-
-        self.log(f"Boot partition  : {boot_part_dev}")
-        self.log(f"Linux partition : {linux_part_dev}")
-
-        # Format boot partition
-        self.set_status("Formatting boot partition FAT32…")
-        code, _, err = run(["mkfs.fat", "-F32", "-n", "LINUX_LIVE", boot_part_dev])
-        if code != 0:
-            self.log(f"mkfs.fat failed: {err}", error=True)
-            return False
-
-        # Mount and copy ISO
-        mnt = "/mnt/linux_installer_boot"
-        os.makedirs(mnt, exist_ok=True)
-        run(["mount", boot_part_dev, mnt])
-        try:
-            ok = self._copy_iso_to_mount(iso_path, mnt, distro, distro_key)
-        finally:
-            run(["umount", mnt])
-
-        if not ok:
-            return False
-
-        self.log(f"Boot partition ready at {boot_part_dev}.")
-        self.log(f"Linux partition at {linux_part_dev} – "
-                 "the installer will format this during installation.")
-
-        self._boot_part_dev = boot_part_dev
-        self._write_boot_instructions(
-            boot_dev=boot_part_dev,
-            linux_dev=linux_part_dev,
-            distro_label=distro["label"],
-        )
+        self._finalize_strategy(boot_dev, linux_dev, distro["label"])
         return True
 
     # ── filesystem shrink helpers ───────────────────────────────────────────
@@ -2067,23 +1944,16 @@ class InstallerWindow(Gtk.ApplicationWindow):
 
         current_size = 0
         for line in out.splitlines():
-            # "Current volume size: 1000000000000 bytes"
             if "Current volume size" in line and "bytes" in line:
-                parts = line.split()
-                for i, p in enumerate(parts):
-                    if p == "bytes" and i > 0:
-                        try:
-                            current_size = int(parts[i - 1])
-                        except ValueError:
-                            pass
-                        break
+                current_size = _parse_bytes_value(line)
+                break
 
         if current_size == 0:
             self.log("Cannot determine current NTFS volume size.", error=True)
             return False
 
         new_size = current_size - shrink_bytes
-        if new_size < 1_073_741_824:  # 1 GB minimum
+        if new_size < GiB:  # 1 GB minimum
             self.log(f"New NTFS size would be too small: {bytes_to_gb(new_size)} GB",
                      error=True)
             return False
@@ -2115,178 +1985,72 @@ class InstallerWindow(Gtk.ApplicationWindow):
     def _strategy_other_disk_shrink(self, disk_path, shrink_dev, shrink_gb,
                                      linux_gb, iso_path, distro, distro_key,
                                      custom_mode):
-        """Shrink a btrfs or ext4 partition on another disk and create partitions."""
+        """Shrink a partition on another disk and create boot+linux partitions."""
         self.log("")
         self.log("━━ Strategy: shrink partition on another disk ━━")
         self.log(f"Target disk: {disk_path}")
         self.log(f"Shrinking: {shrink_dev} by {shrink_gb} GB")
 
-        boot_gb = MIN_BOOT_GB
-
-        # Verify the target filesystem is shrinkable
+        # Verify and dispatch filesystem shrink
         fstype = get_partition_fstype(shrink_dev)
         if fstype not in ("btrfs", "ext4", "ext3", "ext2", "ntfs"):
             self.log(f"Cannot shrink {shrink_dev}: filesystem is {fstype}, "
                      f"only btrfs, ext4, and NTFS are supported.", error=True)
             return False
 
-        needed_bytes = shrink_gb * 1_073_741_824
-
-        if fstype == "btrfs":
-            ok = self._shrink_btrfs(shrink_dev, needed_bytes)
-        elif fstype == "ntfs":
-            ok = self._shrink_ntfs(shrink_dev, needed_bytes)
-        else:
-            ok = self._shrink_ext(shrink_dev, needed_bytes)
-
-        if not ok:
+        needed_bytes = shrink_gb * GiB
+        shrink_fn = {"btrfs": self._shrink_btrfs, "ntfs": self._shrink_ntfs}.get(
+            fstype, self._shrink_ext)
+        if not shrink_fn(shrink_dev, needed_bytes):
             return False
 
-        # Now shrink the partition table entry and create new ones
+        # Get partition layout and find the shrunk partition
         _, part_num = self._resolve_disk_and_part(shrink_dev)
         if not part_num:
             self.log(f"Cannot resolve partition number for {shrink_dev}", error=True)
             return False
 
-        code, out, _ = run(["parted", "-m", disk_path, "unit", "MiB", "print"])
-        part_start_mib = part_end_mib = None
-        disk_label = "gpt"
-        next_part_start_mib = None
-        for line in out.splitlines():
-            cols = line.rstrip(";").split(":")
-            if len(cols) >= 6 and cols[0] == disk_path:
-                disk_label = cols[5]
-            if len(cols) >= 3 and cols[0].isdigit():
-                pn = int(cols[0])
-                if pn == part_num:
-                    part_start_mib = int(float(cols[1].replace("MiB", "")))
-                    part_end_mib = int(float(cols[2].replace("MiB", "")))
-                elif pn > part_num and next_part_start_mib is None:
-                    next_part_start_mib = int(float(cols[1].replace("MiB", "")))
+        parts, disk_label, _ = get_disk_partitions(disk_path)
+        is_gpt = "gpt" in disk_label.lower()
 
-        if part_end_mib is None or part_start_mib is None:
+        part_start_mib = part_end_mib = None
+        next_part_start_mib = None
+        for p in parts:
+            if p["is_free"]:
+                continue
+            if p["num"] == part_num:
+                part_start_mib = p["start_mib"]
+                part_end_mib = p["end_mib"]
+            elif p["num"] > part_num and next_part_start_mib is None:
+                next_part_start_mib = p["start_mib"]
+
+        if part_start_mib is None or part_end_mib is None:
             self.log("Cannot determine partition boundaries.", error=True)
             return False
 
-        is_gpt = "gpt" in disk_label.lower()
         new_part_size_mib = part_end_mib - part_start_mib - shrink_gb * 1024
-        new_part_end_mib = part_start_mib + new_part_size_mib
 
-        self.log(f"Shrinking partition {part_num}: end {part_end_mib} → {new_part_end_mib} MiB")
-        self.set_status("Shrinking partition table entry…")
-
-        new_size_sectors = new_part_size_mib * 2048
-        sfdisk_script = f"{part_num}: size={new_size_sectors}\n"
-        result = subprocess.run(
-            ["sfdisk", "--no-reread", "-N", str(part_num), disk_path],
-            input=sfdisk_script, capture_output=True, text=True,
-        )
-        if result.returncode != 0:
-            self.log(f"sfdisk resize failed: {result.stderr.strip()}", error=True)
-            # Fallback with parted
-            env = os.environ.copy(); env["LANG"] = "C"; env["LC_ALL"] = "C"
-            result2 = subprocess.run(
-                ["parted", "---pretend-input-tty", "-s", "--", disk_path,
-                 "resizepart", str(part_num), f"{new_part_end_mib}MiB"],
-                input="Yes\n", capture_output=True, text=True, env=env,
-            )
-            if result2.returncode != 0:
-                self.log(f"Partition resize failed: {result2.stderr.strip()}", error=True)
-                return False
-
-        run(["partprobe", disk_path])
-        time.sleep(2)
-
-        # Re-read actual end
-        code, out, _ = run(["parted", "-m", disk_path, "unit", "MiB", "print"])
-        actual_new_end = None
-        for line in out.splitlines():
-            cols = line.rstrip(";").split(":")
-            if len(cols) >= 3 and cols[0].isdigit() and int(cols[0]) == part_num:
-                actual_new_end = int(float(cols[2].replace("MiB", "")))
+        actual_new_end = self._resize_partition_entry(
+            disk_path, part_num, part_start_mib, new_part_size_mib)
         if actual_new_end is None:
-            self.log("Cannot read partition table after resize.", error=True)
             return False
 
         # Create boot + linux partitions in freed space
         boot_start = actual_new_end + 1
-        boot_end = boot_start + boot_gb * 1024
+        boot_end = boot_start + MIN_BOOT_GB * 1024
         linux_start = boot_end + 1
-        if next_part_start_mib:
-            linux_end = f"{next_part_start_mib - 1}MiB"
-        else:
-            linux_end = "100%"
+        linux_end_str = f"{next_part_start_mib - 1}MiB" if next_part_start_mib else "100%"
 
-        self.log(f"Creating boot partition  {boot_start}–{boot_end} MiB")
-        self.set_status("Creating boot partition…")
+        result = self._create_boot_linux_parts(
+            disk_path, boot_start, boot_end, linux_start, linux_end_str, is_gpt)
+        if result is None:
+            return False
+        boot_dev, linux_dev = result
 
-        if is_gpt:
-            mkpart_boot  = ["mkpart", "LINUX_LIVE", "fat32",
-                            f"{boot_start}MiB", f"{boot_end}MiB"]
-            mkpart_linux = ["mkpart", "linux", "ext4",
-                            f"{linux_start}MiB", linux_end]
-        else:
-            mkpart_boot  = ["mkpart", "primary", "fat32",
-                            f"{boot_start}MiB", f"{boot_end}MiB"]
-            mkpart_linux = ["mkpart", "primary", "ext4",
-                            f"{linux_start}MiB", linux_end]
-
-        cmd = ["parted", "-s", "--", disk_path] + mkpart_boot + mkpart_linux
-        code, _, err = run(cmd)
-        if code != 0:
-            self.log(f"parted mkpart failed: {err}", error=True)
+        if not self._format_and_populate_boot(boot_dev, iso_path, distro, distro_key):
             return False
 
-        time.sleep(2)
-        run(["partprobe", disk_path])
-        time.sleep(2)
-
-        # Find new partitions
-        code, out, _ = run(["parted", "-m", disk_path, "unit", "MiB", "print"])
-        boot_part_num = linux_part_num = None
-        for line in out.splitlines():
-            cols = line.rstrip(";").split(":")
-            if len(cols) >= 3 and cols[0].isdigit():
-                pn = int(cols[0])
-                start = int(float(cols[1].replace("MiB", "")))
-                if abs(start - boot_start) <= 2:
-                    boot_part_num = pn
-                elif abs(start - linux_start) <= 2:
-                    linux_part_num = pn
-
-        if boot_part_num is None or linux_part_num is None:
-            self.log(f"Cannot identify new partitions.", error=True)
-            return False
-
-        boot_part_dev  = _part_dev_path(disk_path, boot_part_num)
-        linux_part_dev = _part_dev_path(disk_path, linux_part_num)
-
-        # Format and copy
-        self.set_status("Formatting boot partition FAT32…")
-        code, _, err = run(["mkfs.fat", "-F32", "-n", "LINUX_LIVE", boot_part_dev])
-        if code != 0:
-            self.log(f"mkfs.fat failed: {err}", error=True)
-            return False
-
-        mnt = "/mnt/linux_installer_boot"
-        os.makedirs(mnt, exist_ok=True)
-        run(["mount", boot_part_dev, mnt])
-        try:
-            ok = self._copy_iso_to_mount(iso_path, mnt, distro, distro_key)
-        finally:
-            run(["umount", mnt])
-
-        if not ok:
-            return False
-
-        self.log(f"Boot partition ready at {boot_part_dev}.")
-        self.log(f"Linux partition at {linux_part_dev}.")
-        self._boot_part_dev = boot_part_dev
-        self._write_boot_instructions(
-            boot_dev=boot_part_dev,
-            linux_dev=linux_part_dev,
-            distro_label=distro["label"],
-        )
+        self._finalize_strategy(boot_dev, linux_dev, distro["label"])
         return True
 
     # ── wipe-disk strategy (secondary drives only) ─────────────────────────
@@ -2650,7 +2414,6 @@ class InstallerWindow(Gtk.ApplicationWindow):
             f"{mnt}/boot/grub2/grub.cfg",
             f"{mnt}/isolinux/isolinux.cfg",
         ]
-        import re
         for p in cfg_files:
             if not os.path.exists(p):
                 continue
@@ -2685,8 +2448,6 @@ class InstallerWindow(Gtk.ApplicationWindow):
         """
         self.log("Configuring UEFI boot entry…")
         self.set_status("Setting UEFI boot order…")
-
-        import re
 
         # Check if we're on a UEFI system
         if not os.path.isdir("/sys/firmware/efi"):
@@ -2841,7 +2602,6 @@ class InstallerWindow(Gtk.ApplicationWindow):
     # ── helpers ───────────────────────────────────────────────────────────────
     def _resolve_disk_and_part(self, device):
         """Given /dev/sda3 return ('/dev/sda', 3), handles nvme too."""
-        import re
         m = re.match(r"^(/dev/(?:nvme\d+n\d+|[a-z]+))p?(\d+)$", device)
         if m:
             return m.group(1), int(m.group(2))
