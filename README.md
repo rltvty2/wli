@@ -10,6 +10,8 @@ Install a bootable Linux partition to your hard drive without a USB stick or man
 
 ---
 
+Acknowledgement: AI (mostly Claude) was used in the development of this software. That being said I always test before releasing code.
+
 ## Running under Linux
 
 Download `ulli-linux.py`, right click on `ulli-linux.py`, click properties, and then, under the permissions tab check "Allow this file to run as a program". Then double click on the `.py` and click "Run in Terminal".
