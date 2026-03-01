@@ -418,6 +418,7 @@ class InstallerWindow(Gtk.ApplicationWindow):
         checkbutton label, radiobutton label { color: #c8cdd8; }
         entry { background-color: #2e333d; color: #c8cdd8; border-color: #3d4350; }
         spinbutton { background-color: #2e333d; color: #c8cdd8; border-color: #3d4350; }
+        spinbutton.size-spin, spinbutton.size-spin entry, spinbutton.size-spin text { background-color: #ffffff; color: #000000; }
         separator { background-color: #2e333d; }
         .header-title {
             font-family: 'IBM Plex Mono', 'Fira Mono', monospace;
@@ -524,7 +525,7 @@ class InstallerWindow(Gtk.ApplicationWindow):
         hdr = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=2)
         title = Gtk.Label(label="⚙ ULLI USB-less Linux Installer")
         title.get_style_context().add_class("header-title")
-        sub = Gtk.Label(label="Dual-boot installer  ·  btrfs shrink  ·  no USB required")
+        sub = Gtk.Label(label="Dual-boot installer  ·  no USB required")
         sub.get_style_context().add_class("sub-header")
         hdr.pack_start(title, False, False, 0)
         hdr.pack_start(sub, False, False, 0)
@@ -542,11 +543,8 @@ class InstallerWindow(Gtk.ApplicationWindow):
         # ── Distribution group ──
         root.pack_start(self._build_distro_group(), False, False, 8)
 
-        # ── Disk info + size ──
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=10)
-        row.pack_start(self._build_disk_group(), True, True, 0)
-        row.pack_start(self._build_size_group(), True, True, 0)
-        root.pack_start(row, False, False, 0)
+        # ── Disk info ──
+        root.pack_start(self._build_disk_group(), False, False, 0)
 
         # ── Log ──
         root.pack_start(self._build_log_group(), True, True, 10)
@@ -619,33 +617,6 @@ class InstallerWindow(Gtk.ApplicationWindow):
         self.strategy_label.get_style_context().add_class("strategy-label")
         self.strategy_label.get_style_context().add_class("strategy-none")
         inner.pack_start(self.strategy_label, False, False, 4)
-        return outer
-
-    def _build_size_group(self):
-        outer, inner = self._group_frame("PARTITION / IMAGE SIZE")
-
-        desc = Gtk.Label(xalign=0, wrap=True)
-        desc.set_markup(
-            '<span font_family="monospace" size="small" foreground="#8892a4">'
-            "btrfs → shrinks partition, installs to new space"
-            "</span>"
-        )
-        inner.pack_start(desc, False, False, 4)
-
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
-        lbl = Gtk.Label(label="Linux size (GB):", xalign=0)
-        lbl.get_style_context().add_class("disk-info")
-        row.pack_start(lbl, False, False, 0)
-        adj = Gtk.Adjustment(value=30, lower=MIN_LINUX_GB, upper=500,
-                             step_increment=5, page_increment=20)
-        self.size_spin = Gtk.SpinButton(adjustment=adj, climb_rate=1, digits=0)
-        row.pack_start(self.size_spin, False, False, 0)
-        inner.pack_start(row, False, False, 4)
-
-        self.size_help = Gtk.Label(
-            label="Minimum 20 GB · Recommended 60+ GB", xalign=0)
-        self.size_help.get_style_context().add_class("disk-info")
-        inner.pack_start(self.size_help, False, False, 0)
         return outer
 
     def _build_log_group(self):
@@ -740,18 +711,26 @@ class InstallerWindow(Gtk.ApplicationWindow):
             f"Mountpoint: {self.fs_info['mountpoint']}"
         )
 
+        # Check if there are other disks available
+        all_disks = get_all_disks()
+        root_disk_path = ""
+        if dev:
+            disk_d, _ = self._resolve_disk_and_part(dev)
+            if disk_d:
+                root_disk_path = disk_d
+        other_disks = [d for d in all_disks if d["path"] != root_disk_path]
+
         if fstype == "btrfs":
             strat = "STRATEGY: shrink btrfs → install to new partition"
             sc = "strategy-btrfs"
+        elif other_disks:
+            strat = f"Root is {fstype} (not shrinkable) – use a second drive to install"
+            sc = "strategy-none"
         else:
             strat = f"WARNING: unsupported filesystem ({fstype}) – only btrfs is supported"
             sc = "strategy-none"
 
         self._ui_set_disk_info(text, strat, sc)
-        if free and total:
-            max_gb = int(bytes_to_gb(free) - 15)
-            if max_gb > MIN_LINUX_GB:
-                self.size_spin.get_adjustment().set_upper(max_gb)
 
     def _ui_set_disk_info(self, text, strat, style_class):
         self.disk_info_label.set_text(text)
@@ -787,13 +766,12 @@ class InstallerWindow(Gtk.ApplicationWindow):
         GLib.idle_add(self.progress.pulse)
 
     # ── disk plan dialog ────────────────────────────────────────────────────
-    def _show_disk_plan(self, distro_label, linux_gb):
-        """Show a GTK dialog with disk selection, before/after layout, strategy.
-        Returns dict with approved, strategy, target_disk, shrink_dev, shrink_gb
+    def _show_disk_plan(self, distro_label):
+        """Show a GTK dialog with disk selection, size, before/after layout, strategy.
+        Returns dict with approved, strategy, target_disk, shrink_dev, shrink_gb, linux_gb
         or None if cancelled. Must be called on the GTK main thread."""
 
         boot_gb = MIN_BOOT_GB
-        total_needed_gb = linux_gb + boot_gb
 
         # Gather disk info
         all_disks = get_all_disks()
@@ -874,6 +852,23 @@ class InstallerWindow(Gtk.ApplicationWindow):
         disk_frame.set_margin_top(4)
         content.pack_start(disk_frame, False, False, 0)
 
+        # ── Partition Size ──
+        size_frame = Gtk.Frame(label="Linux Partition Size")
+        size_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+        size_box.set_margin_start(8); size_box.set_margin_end(8)
+        size_box.set_margin_top(4); size_box.set_margin_bottom(4)
+        size_lbl = Gtk.Label(label="Linux size (GB):", xalign=0)
+        size_box.pack_start(size_lbl, False, False, 0)
+        size_adj = Gtk.Adjustment(value=30, lower=MIN_LINUX_GB, upper=500,
+                                  step_increment=5, page_increment=20)
+        size_spin = Gtk.SpinButton(adjustment=size_adj, climb_rate=1, digits=0)
+        size_spin.get_style_context().add_class("size-spin")
+        size_box.pack_start(size_spin, False, False, 0)
+        size_help = Gtk.Label(label="  Minimum 20 GB · Recommended 60+ GB", xalign=0)
+        size_box.pack_start(size_help, True, True, 0)
+        size_frame.add(size_box)
+        content.pack_start(size_frame, False, False, 0)
+
         # ── Current Layout ──
         layout_frame = Gtk.Frame(label="Current Disk Layout")
         layout_text = Gtk.TextView()
@@ -943,6 +938,8 @@ class InstallerWindow(Gtk.ApplicationWindow):
             idx = disk_combo.get_active()
             if idx < 0 or idx >= len(disk_entries):
                 return
+            linux_gb = int(size_spin.get_value())
+            total_needed_gb = linux_gb + boot_gb
             sel = disk_entries[idx]
             sel_path = sel["path"]
             is_root_disk = sel["is_root"]
@@ -1294,6 +1291,7 @@ class InstallerWindow(Gtk.ApplicationWindow):
         radio_primary.connect("toggled", update_all)
         radio_secondary.connect("toggled", update_all)
         radio_wipe.connect("toggled", update_all)
+        size_spin.connect("value-changed", update_all)
 
         # Initial update
         update_all()
@@ -1309,6 +1307,7 @@ class InstallerWindow(Gtk.ApplicationWindow):
                 "target_disk": plan_state["target_disk"],
                 "shrink_dev": plan_state["shrink_dev"],
                 "shrink_gb": plan_state["shrink_gb"],
+                "linux_gb": int(size_spin.get_value()),
             }
         return None
 
@@ -1347,14 +1346,12 @@ class InstallerWindow(Gtk.ApplicationWindow):
 
         fstype  = self.fs_info["fstype"]
         device  = self.fs_info["device"]
-        linux_gb = int(self.size_spin.get_value())
         distro_key  = self.selected_distro
         custom_mode = self.custom_radio.get_active()
         distro = DISTROS[distro_key]
 
         self.log(f"Root device : {device}")
         self.log(f"Filesystem  : {fstype}")
-        self.log(f"Target size : {linux_gb} GB")
         self.log(f"Distro      : {distro['label']}")
 
         # ── 1b. Show disk plan – user must approve ─────────────────────────
@@ -1363,7 +1360,7 @@ class InstallerWindow(Gtk.ApplicationWindow):
         plan_event = threading.Event()
 
         def show_plan_on_main():
-            plan_result[0] = self._show_disk_plan(distro_label, linux_gb)
+            plan_result[0] = self._show_disk_plan(distro_label)
             plan_event.set()
             return False
 
@@ -1380,7 +1377,9 @@ class InstallerWindow(Gtk.ApplicationWindow):
         target_disk = plan["target_disk"]
         shrink_dev = plan.get("shrink_dev")
         shrink_gb = plan.get("shrink_gb", 0)
+        linux_gb = plan.get("linux_gb", 30)
         self.log(f"Disk plan approved. Strategy: {strategy}, Target: {target_disk}")
+        self.log(f"Target size : {linux_gb} GB")
 
         # ── 2. resolve ISO ─────────────────────────────────────────────────
         if custom_mode:
